@@ -21,6 +21,7 @@ concept Awaitable = Awaiter<A> || requires(A a) {
   { a.operator co_await() } -> Awaiter;
 };
 
+namespace detail {
 struct Void {};
 
 template <typename T, typename U> auto &assign(U &lhs, T &&rhs) {
@@ -29,12 +30,14 @@ template <typename T, typename U> auto &assign(U &lhs, T &&rhs) {
 
 template <typename T> void assign(Void &lhs, T &&rhs) {}
 
+} // namespace detail
+
 template <class A> struct AwaitableTraits;
 
 template <Awaiter A> struct AwaitableTraits<A> {
   using RetType = decltype(std::declval<A>().await_resume());
   using NonVoidRetType =
-      std::conditional_t<std::is_same_v<void, RetType>, Void, RetType>;
+      std::conditional_t<std::is_same_v<void, RetType>, detail::Void, RetType>;
 };
 
 template <class A>
@@ -136,10 +139,10 @@ template <typename T> struct Task {
   // Task(Task &&) = delete;
 
   ~Task() {
-    // if (coro_) {
-    //   coro_.destroy();
-    // }
-    // TODO: when to destroy the handle?
+    if (coro_) {
+      coro_.destroy();
+      coro_ = nullptr;
+    }
   }
 
   struct TaskAwaiter {

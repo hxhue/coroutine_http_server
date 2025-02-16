@@ -1,3 +1,4 @@
+#include <cassert>
 #include <chrono>
 #include <coroutine>
 #include <cstddef>
@@ -22,8 +23,10 @@ struct Scheduler {
   };
 
   void add_task(std::coroutine_handle<> h) {
-    // A new task gets scheduled early.
-    ready_queue_.push_front(h);
+    if (h) {
+      // A new task gets scheduled early.
+      ready_queue_.push_front(h);
+    }
   }
 
   void add_timer(Clock::time_point expire, std::coroutine_handle<> h) {
@@ -101,25 +104,13 @@ inline Task<void> sleep_for(Clock::duration duration) {
   co_return co_await SleepAwaiter(Clock::now() + duration);
 }
 
+namespace detail::when_all {
+
 struct WhenAllTaskGroup {
   std::size_t count_;
   std::exception_ptr exception_;
   std::coroutine_handle<> prev_;
 };
-
-template <typename R>
-Task<void> when_all_task(WhenAllTaskGroup &group, Awaitable auto &awaitable,
-                         R &result) {
-  try {
-    assign(result, co_await awaitable);
-  } catch (...) {
-    group.exception_ = std::current_exception();
-    Scheduler::get()->add_task(group.prev_);
-  }
-  if (--group.count_ == 0) {
-    Scheduler::get()->add_task(group.prev_);
-  }
-}
 
 struct WhenAllAwaiter {
   bool await_ready() const { return tasks_.empty(); }
@@ -139,23 +130,41 @@ struct WhenAllAwaiter {
     }
   }
 
-  std::span<const std::coroutine_handle<>> tasks_;
+  std::span<const Task<void>> tasks_;
   WhenAllTaskGroup &group_;
 };
+
+template <typename R>
+Task<void> when_all_task(WhenAllTaskGroup &group, Awaitable auto &awaitable,
+                         R &result) {
+  try {
+    assign(result, co_await awaitable);
+  } catch (...) {
+    group.exception_ = std::current_exception();
+    Scheduler::get()->add_task(group.prev_);
+  }
+  assert(group.count_ > 0);
+  if (--group.count_ == 0) {
+    Scheduler::get()->add_task(group.prev_);
+  }
+}
+
+} // namespace detail::when_all
 
 // when_all 假定了要等待的任务都是新任务，还不在调度器中
 template <Awaitable... As, typename R = std::tuple<
                                typename AwaitableTraits<As>::NonVoidRetType...>>
   requires(sizeof...(As) != 0)
 Task<R> when_all(As &&...as) {
+  using namespace detail::when_all;
+
   R result;
   WhenAllTaskGroup group{.count_ = sizeof...(As)};
 
   // Create tasks from awaitables.
   auto idx = std::make_index_sequence<sizeof...(As)>{};
-  std::array tasks = [&]<std::size_t... I>(std::index_sequence<I...>) {
-    return std::array{static_cast<std::coroutine_handle<>>(
-        when_all_task(group, as, std::get<I>(result)).coro_)...};
+  auto tasks = [&]<std::size_t... I>(std::index_sequence<I...>) {
+    return std::array{(when_all_task(group, as, std::get<I>(result)))...};
   }(idx);
 
   // Start the first task and put all other tasks in the ready queue. When the
@@ -164,6 +173,56 @@ Task<R> when_all(As &&...as) {
 
   co_return result;
 }
+
+namespace detail::when_any {
+
+struct WhenAnyTaskGroup {
+  std::size_t index_{-1UL};
+  std::exception_ptr exception_;
+  std::coroutine_handle<> prev_;
+};
+
+struct WhenAnyAwaiter {
+  bool await_ready() const { return tasks_.empty(); }
+
+  std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
+    group_.prev_ = h;
+    auto s = Scheduler::get();
+    for (auto &task : tasks_.subspan(1)) {
+      s->add_task(task);
+    }
+    return tasks_[0];
+  }
+
+  auto await_resume() const {
+    if (group_.exception_) {
+      std::rethrow_exception(group_.exception_);
+    }
+  }
+
+  std::span<const std::coroutine_handle<>> tasks_;
+  WhenAnyTaskGroup &group_;
+};
+
+template <typename R>
+Task<void> when_any_task(WhenAnyTaskGroup &group, Awaitable auto &awaitable,
+                         R &result, std::size_t index) {
+  try {
+    assign(result, co_await awaitable);
+  } catch (...) {
+    group.exception_ = std::current_exception();
+    Scheduler::get()->add_task(group.prev_);
+  }
+  if (group.index_ == -1UL) {
+    group.index_ = index;
+  }
+  // TODO: cancel other tasks
+  Scheduler::get()->add_task(group.prev_);
+}
+
+} // namespace detail::when_any
+
+// Task<size_t> when_any() { ... }
 
 int main() {
   using namespace std::chrono_literals;
@@ -182,17 +241,16 @@ int main() {
       std::cout << "task2 wakes up\n";
       co_return 2;
     }();
+
+    // FIXME: crash in when_all
     auto [result1, result2] = co_await when_all(task1, task2);
+    // auto result1 = co_await task1;
+    // auto result2 = co_await task2;
 
     std::cout << "task1 result: " << result1 << std::endl;
     std::cout << "task2 result: " << result2 << std::endl;
   }();
-  // scheduler->add_task(task1);
-  // scheduler->add_task(task2);
+
   scheduler->add_task(task3);
   scheduler->main_loop();
-
-  // std::cout << "task1 result: " << task1.coro_.promise().result() <<
-  // std::endl; std::cout << "task2 result: " << task2.coro_.promise().result()
-  // << std::endl;
 }
