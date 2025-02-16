@@ -72,9 +72,15 @@ struct SleepAwaiter {
   std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
     Scheduler::get()->add_timer(expire_time_, h);
     return std::noop_coroutine();
-    //
+
     // UB: A segmentation fault can be caused by erasing the frame first, then
-    // resuming the erased frame!
+    // resuming the erased frame! The details may differ but it's UB.
+    //
+    // https://stackoverflow.com/a/78405278/
+    // <quote>When await_suspend returns a handle, resume() is called on that
+    // handle. This violates the precondition of resume(), so the behavior is
+    // undefined.</quote>
+    // The "precondition of resume()" means the coroutine must be suspended.
     //
     // return h;
   }

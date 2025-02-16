@@ -5,10 +5,8 @@
 #include <iostream>
 #include <optional>
 #include <stdexcept>
-
-struct NoValue : std::runtime_error {
-  NoValue() : std::runtime_error("The value is either consumed or not set") {}
-};
+#include <type_traits>
+#include <variant>
 
 // 用保存上个协程句柄的方式实现了有栈协程的恢复功能。
 // https://en.cppreference.com/w/cpp/coroutine/noop_coroutine
@@ -28,59 +26,68 @@ struct PreviousAwaiter {
   void await_resume() const noexcept {}
 };
 
-struct PromiseBase {
-  std::suspend_always initial_suspend() noexcept { return {}; }
-  auto final_suspend() noexcept {
-    // 有可能是从 TaskAwaiter::await_suspend 跳转来的，因此要检查是否需要恢复上一个协程
-    return PreviousAwaiter(prev_);
-  }
-  void unhandled_exception() { exception_ = std::current_exception(); }
+namespace detail::promise {
 
-  std::exception_ptr exception_{};
-  std::coroutine_handle<> prev_{};
+template <typename T> struct PromiseVariantTrait {
+  using type = std::variant<std::monostate, T, std::exception_ptr>;
 };
 
-template <typename T> struct Promise : PromiseBase {
-  auto get_return_object() {
-    return std::coroutine_handle<Promise>::from_promise(*this);
-  }
+template <> struct PromiseVariantTrait<void> {
+  using type = std::variant<std::monostate, std::exception_ptr>;
+};
 
-  void return_value(T x) { value_ = std::move(x); }
+template <typename T>
+using PromiseVariant = typename PromiseVariantTrait<T>::type;
+
+template <typename Derived, typename T, bool IsVoid = std::is_same_v<void, T>>
+struct PromiseReturnYield {
+  void return_value(T x) {
+    auto &self = static_cast<Derived &>(*this);
+    self.value_ = std::move(x);
+  }
 
   std::suspend_always yield_value(T x) {
-    value_ = std::move(x);
+    auto &self = static_cast<Derived &>(*this);
+    self.value_ = std::move(x);
     return {};
   }
-
-  // Helper function
-  T result() {
-    if (exception_) {
-      std::rethrow_exception(exception_);
-    }
-    if (value_.has_value()) {
-      auto ret = std::move(value_.value());
-      value_ = std::nullopt;
-      return ret;
-    }
-    throw NoValue();
-  }
-
-  std::optional<T> value_{};
 };
 
-template <> struct Promise<void> : PromiseBase {
+template <typename Derived, typename T>
+struct PromiseReturnYield<Derived, T, true> {
+  void return_void() {}
+};
+} // namespace detail::promise
+
+template <typename T>
+struct Promise : detail::promise::PromiseReturnYield<Promise<T>, T> {
+
+  std::suspend_always initial_suspend() noexcept { return {}; }
+
+  auto final_suspend() noexcept { return PreviousAwaiter(prev_); }
+
+  void unhandled_exception() { value_ = std::current_exception(); }
+
   auto get_return_object() {
     return std::coroutine_handle<Promise>::from_promise(*this);
   }
 
-  void return_void() {}
-
-  // Helper function
-  void result() {
-    if (exception_) {
-      std::rethrow_exception(exception_);
+  T result() {
+    if (auto *pe = std::get_if<std::exception_ptr>(&value_)) {
+      std::rethrow_exception(*pe);
+    }
+    if constexpr (!std::is_same_v<void, T>) {
+      if (auto *pv = std::get_if<T>(&value_)) {
+        auto ret = std::move(*pv);
+        value_ = std::monostate{};
+        return ret;
+      }
+      throw std::runtime_error("The value is either consumed or not set");
     }
   }
+
+  std::coroutine_handle<> prev_{};
+  detail::promise::PromiseVariant<T> value_;
 };
 
 template <typename T> struct Task {
@@ -103,6 +110,13 @@ template <typename T> struct Task {
     std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
       // 被等待时跳转到本协程执行，但是保留上一协程，将来恢复
       coro_.promise().prev_ = h;
+
+      // Do not call coro_.resume() because std::coroutine_handle<...>::resume
+      // allocates a new stack frame and is prune to stack overflow!
+      //
+      // https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer#the-stack-overflow-problem
+      // <quote>Every time we resume a coroutine by calling .resume() we create
+      // a new stack-frame for the execution of that coroutine.</quote>
       return coro_;
     }
 
