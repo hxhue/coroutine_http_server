@@ -1,5 +1,6 @@
 #pragma once
 
+#include <concepts>
 #include <coroutine>
 #include <exception>
 #include <iostream>
@@ -8,17 +9,54 @@
 #include <type_traits>
 #include <variant>
 
+template <class A>
+concept Awaiter = requires(A a, std::coroutine_handle<> h) {
+  { a.await_ready() };
+  { a.await_suspend(h) };
+  { a.await_resume() };
+};
+
+template <class A>
+concept Awaitable = Awaiter<A> || requires(A a) {
+  { a.operator co_await() } -> Awaiter;
+};
+
+struct Void {};
+
+template <typename T, typename U> auto &assign(U &lhs, T &&rhs) {
+  return lhs = std::forward<T>(rhs);
+}
+
+template <typename T> void assign(Void &lhs, T &&rhs) {}
+
+template <class A> struct AwaitableTraits;
+
+template <Awaiter A> struct AwaitableTraits<A> {
+  using RetType = decltype(std::declval<A>().await_resume());
+  using NonVoidRetType =
+      std::conditional_t<std::is_same_v<void, RetType>, Void, RetType>;
+};
+
+template <class A>
+  requires(!Awaiter<A> && Awaitable<A>)
+struct AwaitableTraits<A>
+    : AwaitableTraits<decltype(std::declval<A>().operator co_await())> {};
+
+template <typename T>
+concept PreviousPromise = requires(T p) {
+  { p.prev_ } -> std::convertible_to<std::coroutine_handle<>>;
+};
+
 // 用保存上个协程句柄的方式实现了有栈协程的恢复功能。
 // https://en.cppreference.com/w/cpp/coroutine/noop_coroutine
 struct PreviousAwaiter {
-  std::coroutine_handle<> prev_;
-
   bool await_ready() const noexcept { return false; }
 
+  template <PreviousPromise P>
   std::coroutine_handle<>
-  await_suspend(std::coroutine_handle<> coroutine) const noexcept {
-    if (prev_)
-      return prev_;
+  await_suspend(std::coroutine_handle<P> h) const noexcept {
+    if (auto prev = h.promise().prev_; prev)
+      return prev;
     else
       return std::noop_coroutine();
   }
@@ -43,12 +81,12 @@ template <typename Derived, typename T, bool IsVoid = std::is_same_v<void, T>>
 struct PromiseReturnYield {
   void return_value(T x) {
     auto &self = static_cast<Derived &>(*this);
-    self.value_ = std::move(x);
+    self.result_ = std::move(x);
   }
 
   std::suspend_always yield_value(T x) {
     auto &self = static_cast<Derived &>(*this);
-    self.value_ = std::move(x);
+    self.result_ = std::move(x);
     return {};
   }
 };
@@ -64,22 +102,22 @@ struct Promise : detail::promise::PromiseReturnYield<Promise<T>, T> {
 
   std::suspend_always initial_suspend() noexcept { return {}; }
 
-  auto final_suspend() noexcept { return PreviousAwaiter(prev_); }
+  auto final_suspend() noexcept { return PreviousAwaiter(); }
 
-  void unhandled_exception() { value_ = std::current_exception(); }
+  void unhandled_exception() { result_ = std::current_exception(); }
 
   auto get_return_object() {
     return std::coroutine_handle<Promise>::from_promise(*this);
   }
 
   T result() {
-    if (auto *pe = std::get_if<std::exception_ptr>(&value_)) {
+    if (auto *pe = std::get_if<std::exception_ptr>(&result_)) {
       std::rethrow_exception(*pe);
     }
     if constexpr (!std::is_same_v<void, T>) {
-      if (auto *pv = std::get_if<T>(&value_)) {
+      if (auto *pv = std::get_if<T>(&result_)) {
         auto ret = std::move(*pv);
-        value_ = std::monostate{};
+        result_ = std::monostate{};
         return ret;
       }
       throw std::runtime_error("The value is either consumed or not set");
@@ -87,7 +125,7 @@ struct Promise : detail::promise::PromiseReturnYield<Promise<T>, T> {
   }
 
   std::coroutine_handle<> prev_{};
-  detail::promise::PromiseVariant<T> value_;
+  detail::promise::PromiseVariant<T> result_;
 };
 
 template <typename T> struct Task {
