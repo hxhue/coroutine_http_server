@@ -136,7 +136,9 @@ template <typename T> struct Task {
 
   Task(std::coroutine_handle<promise_type> coro) : coro_(std::move(coro)) {}
 
-  // Task(Task &&) = delete;
+  // Task is the owner of the coroutine handle and should not be copied.
+  Task(Task const &) = delete;
+  Task(Task &&) = default;
 
   ~Task() {
     if (coro_) {
@@ -170,8 +172,6 @@ template <typename T> struct Task {
   };
 
   auto operator co_await() const { return TaskAwaiter(coro_); }
-
-  operator std::coroutine_handle<>() const { return coro_; }
 
   std::coroutine_handle<promise_type> coro_{};
 };

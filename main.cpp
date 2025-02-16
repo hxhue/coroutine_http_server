@@ -29,6 +29,12 @@ struct Scheduler {
     }
   }
 
+  // Don't pass by value! Passing by value causes the handle to destroy inside
+  // the argument's destructor.
+  template <typename T> void add_task(Task<T> const &task) {
+    add_task(task.coro_);
+  }
+
   void add_timer(Clock::time_point expire, std::coroutine_handle<> h) {
     auto timer = Timer{expire, h};
     timer_queue_.push(timer);
@@ -121,7 +127,7 @@ struct WhenAllAwaiter {
     for (auto &task : tasks_.subspan(1)) {
       s->add_task(task);
     }
-    return tasks_[0];
+    return tasks_[0].coro_;
   }
 
   auto await_resume() const {
