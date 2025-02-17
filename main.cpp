@@ -7,6 +7,7 @@
 #include <iostream>
 #include <queue>
 #include <set>
+#include <stdexcept>
 #include <thread>
 #include <type_traits>
 
@@ -30,9 +31,13 @@ struct TimedPromise : Promise<void> {
   ~TimedPromise() {
     // TimedPromise does not own the coroutine handle, so it does not destroy
     // it.
+    // std::cout << "~TimedPromise():\n";
+    // std::cout << "  tree: " << tree_ << "\n";
+    assert(tree_);
     if (tree_) {
       auto h = std::coroutine_handle<TimedPromise>::from_promise(*this);
       tree_->erase(h);
+      // std::cout << "  erased: " << h.address() << std::endl;
     }
   }
 
@@ -100,11 +105,13 @@ struct Scheduler {
 };
 
 struct SleepAwaiter {
-  bool await_ready() const { return expire_ <= Clock::now(); }
+  bool await_ready() const noexcept { return expire_ <= Clock::now(); }
 
-  void await_suspend(std::coroutine_handle<TimedPromise> h) {
+  void await_suspend(std::coroutine_handle<TimedPromise> h) noexcept {
     if (scheduler_) {
-      h.promise().expire_ = expire_;
+      auto &promise = h.promise();
+      promise.expire_ = expire_;
+      promise.tree_ = &scheduler_->coroutines_;
       scheduler_->add_task(h);
     }
     // return std::noop_coroutine();
@@ -121,7 +128,7 @@ struct SleepAwaiter {
     // return h;
   }
 
-  auto await_resume() const noexcept {}
+  auto await_resume() const {}
 
   Clock::time_point expire_{Clock::now()};
   Scheduler *scheduler_{nullptr};
@@ -145,9 +152,9 @@ struct WhenAllTaskGroup {
 };
 
 struct WhenAllAwaiter {
-  bool await_ready() const { return tasks_.empty(); }
+  bool await_ready() const noexcept { return tasks_.empty(); }
 
-  std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
+  std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) noexcept {
     group_.prev_ = h;
     auto s = Scheduler::get();
     for (auto &task : tasks_.subspan(1)) {
@@ -223,9 +230,9 @@ struct WhenAnyTaskGroup {
 };
 
 struct WhenAnyAwaiter {
-  bool await_ready() const { return tasks_.empty(); }
+  bool await_ready() const noexcept { return tasks_.empty(); }
 
-  std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
+  std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) noexcept {
     group_.prev_ = h;
     auto s = Scheduler::get();
     for (auto &task : tasks_.subspan(1)) {
@@ -249,7 +256,7 @@ template <size_t I, typename Variant>
 ReturnPreviousTask when_any_task(WhenAnyTaskGroup &group,
                                  Awaitable auto &awaitable, Variant &result) {
   // One of the tasks is already finished.
-  if (result.index() != 0) {
+  if (result.index() != 0 || group.exception_) {
     co_return nullptr;
   }
   try {
@@ -297,6 +304,9 @@ int main() {
   auto task3 = []() -> Task<void> {
     auto task1 = []() -> Task<int> {
       std::cout << "task1 goes to sleep\n";
+
+      throw std::runtime_error{"wow"};
+
       co_await sleep_for(1s);
       std::cout << "task1 wakes up\n";
       co_return 1;
@@ -308,20 +318,23 @@ int main() {
       co_return 2;
     }();
 
-    // auto [result1, result2] = co_await when_all(task1, task2);
-    // // auto result1 = co_await task1;
-    // // auto result2 = co_await task2;
+    auto [result1, result2] = co_await when_all(task1, task2);
+    // auto result1 = co_await task1;
+    // auto result2 = co_await task2;
 
-    // std::cout << "task1 result: " << result1 << std::endl;
-    // std::cout << "task2 result: " << result2 << std::endl;
+    std::cout << "task1 result: " << result1 << std::endl;
+    std::cout << "task2 result: " << result2 << std::endl;
 
+    // 2025/2/17 18:04 already fixed but exceptions are lost
     // FIXME: task2 still runs and there's segmentation fault.
-    auto result = co_await when_any(task1, task2);
-    if (result.index() == 1) {
-      std::cout << "task1 finished first: " << std::get<1>(result) << std::endl;
-    } else {
-      std::cout << "task2 finished first: " << std::get<2>(result) << std::endl;
-    }
+    // auto result = co_await when_any(task1, task2);
+    // if (result.index() == 1) {
+    //   std::cout << "task1 finished first: " << std::get<1>(result) <<
+    //   std::endl;
+    // } else {
+    //   std::cout << "task2 finished first: " << std::get<2>(result) <<
+    //   std::endl;
+    // }
   }();
 
   scheduler->run(task3);

@@ -50,8 +50,7 @@ struct PreviousAwaiter {
   bool await_ready() const noexcept { return false; }
 
   template <PreviousPromise P>
-  std::coroutine_handle<>
-  await_suspend(std::coroutine_handle<P> h) const noexcept {
+  std::coroutine_handle<> await_suspend(std::coroutine_handle<P> h) const noexcept {
     if (auto prev = h.promise().prev_; prev)
       return prev;
     else
@@ -142,9 +141,9 @@ template <typename T = void, typename P = Promise<T>> struct Task {
   }
 
   struct TaskAwaiter {
-    bool await_ready() const { return false; }
+    bool await_ready() const noexcept { return false; }
 
-    std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) noexcept {
       // 被等待时跳转到本协程执行，但是保留上一协程，将来恢复
       coro_.promise().prev_ = h;
 
@@ -173,8 +172,7 @@ template <typename T = void, typename P = Promise<T>> struct Task {
 struct ReturnPreviousAwaiter {
   bool await_ready() const noexcept { return false; }
 
-  std::coroutine_handle<>
-  await_suspend(std::coroutine_handle<> h) const noexcept {
+  std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) const noexcept {
     return prev_ ? prev_ : std::noop_coroutine();
   }
 
@@ -192,9 +190,7 @@ struct ReturnPreviousPromise {
 
   // Saves the coroutine handle returned by co_return and resumes it when
   // this->final_suspend() is co_awaited.
-  void return_value(std::coroutine_handle<> previous) noexcept {
-    prev_ = previous;
-  }
+  void return_value(std::coroutine_handle<> previous) { prev_ = previous; }
 
   auto get_return_object() {
     return std::coroutine_handle<ReturnPreviousPromise>::from_promise(*this);
@@ -208,7 +204,7 @@ struct ReturnPreviousPromise {
 struct ReturnPreviousTask {
   using promise_type = ReturnPreviousPromise;
 
-  ReturnPreviousTask(std::coroutine_handle<promise_type> coroutine) noexcept
+  ReturnPreviousTask(std::coroutine_handle<promise_type> coroutine)
       : coro_(coroutine) {}
 
   ReturnPreviousTask(ReturnPreviousTask &&) = delete;
