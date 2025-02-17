@@ -69,21 +69,31 @@ struct Scheduler {
     timed_coros_.insert(h);
   }
 
+  void add_task(std::coroutine_handle<> h) {
+    ready_coros_.push_front(h);
+  }
+
   template <typename P> auto run(std::coroutine_handle<P> entry_point) {
-    while (!entry_point.done()) {
-      entry_point.resume();
-      // Either finished or left some timers.
-      while (!timed_coros_.empty()) {
+    assert(ready_coros_.empty());
+    ready_coros_.push_front(entry_point);
+    while (!ready_coros_.empty() || !timed_coros_.empty()) {
+      if (!ready_coros_.empty()) {
+        auto h = ready_coros_.front();
+        ready_coros_.pop_front();
+        h.resume();
+      }
+      if (!timed_coros_.empty()) {
         auto it = timed_coros_.begin();
-        if (it->promise().expire_ <= Clock::now()) {
+        auto expire = it->promise().expire_;
+        if (expire <= Clock::now()) {
           auto coro = *it;
           coro.resume();
-          // When coro is done, it will destroy the promise and remove itself.
-          // Don't erase the coroutine handle here.
+          // When a timed coroutine is done, it will destroy the promise and
+          // remove itself. Don't erase the coroutine handle here.
           //
           // coroutines_.erase(it);
-        } else {
-          std::this_thread::sleep_until(it->promise().expire_);
+        } else if (ready_coros_.empty()) {
+          std::this_thread::sleep_until(expire);
         }
       }
     }
@@ -104,7 +114,7 @@ struct Scheduler {
   Scheduler() = default;
   Scheduler(Scheduler &&) = delete;
 
-  // std::deque<std::coroutine_handle<>> ready_coros_;
+  std::deque<std::coroutine_handle<>> ready_coros_;
   std::set<std::coroutine_handle<TimedPromise>> timed_coros_;
 };
 
@@ -162,9 +172,7 @@ struct WhenAllAwaiter {
     group_.prev_ = h;
     auto s = Scheduler::get();
     for (auto &task : tasks_.subspan(1)) {
-      // s->add_task(task);
-      // TODO: resume is not stackless!
-      task.coro_.resume();
+      s->add_task(task.coro_);
     }
     return tasks_[0].coro_;
   }
@@ -243,8 +251,7 @@ struct WhenAnyAwaiter {
     group_.prev_ = h;
     auto s = Scheduler::get();
     for (auto &task : tasks_.subspan(1)) {
-      // TODO: resume is not stackless!
-      task.coro_.resume();
+      s->add_task(task.coro_);
     }
     return tasks_[0].coro_;
   }
