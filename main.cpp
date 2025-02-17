@@ -33,11 +33,14 @@ struct TimedPromise : Promise<void> {
     // it.
     // std::cout << "~TimedPromise():\n";
     // std::cout << "  tree: " << tree_ << "\n";
-    assert(tree_);
     if (tree_) {
       auto h = std::coroutine_handle<TimedPromise>::from_promise(*this);
+      assert(tree_->contains(h));
       tree_->erase(h);
+      tree_ = nullptr;
       // std::cout << "  erased: " << h.address() << std::endl;
+    } else {
+      std::cerr << "~TimedPromise(): tree_ is null\n";
     }
   }
 
@@ -68,27 +71,29 @@ struct Scheduler {
     coroutines_.insert(h);
   }
 
-  void run(std::coroutine_handle<> entry_point) {
+  template <typename P> auto run(std::coroutine_handle<P> entry_point) {
     while (!entry_point.done()) {
       entry_point.resume();
       // Either finished or left some timers.
       while (!coroutines_.empty()) {
         auto it = coroutines_.begin();
         if (it->promise().expire_ <= Clock::now()) {
-          decltype(coroutines_) tmp; // RAII protection
-          auto nh = coroutines_.extract(it);
-          auto coro = nh.value();
-          tmp.insert(std::move(nh));
-          coro.resume(); // May throw
+          auto coro = *it;
+          coro.resume();
+          // When coro is done, it will destroy the promise and remove itself.
+          // Don't erase the coroutine handle here.
+          //
+          // coroutines_.erase(it);
         } else {
           std::this_thread::sleep_until(it->promise().expire_);
         }
       }
     }
+    return entry_point.promise().result();
   }
 
-  template <typename... Ts> void run(Task<Ts...> const &task) {
-    run(task.coro_);
+  template <typename... Ts> auto run(Task<Ts...> const &task) {
+    return run(task.coro_);
   }
 
   // If the function returns by reference, the result may be copied
@@ -225,6 +230,9 @@ Task<Tuple> when_all(As &&...as) {
 namespace detail::when_any {
 
 struct WhenAnyTaskGroup {
+  static constexpr auto invalid_index = static_cast<std::size_t>(-1);
+
+  std::size_t index{invalid_index};
   std::exception_ptr exception_{};
   std::coroutine_handle<> prev_{};
 };
@@ -256,7 +264,7 @@ template <size_t I, typename Variant>
 ReturnPreviousTask when_any_task(WhenAnyTaskGroup &group,
                                  Awaitable auto &awaitable, Variant &result) {
   // One of the tasks is already finished.
-  if (result.index() != 0 || group.exception_) {
+  if (group.index != WhenAnyTaskGroup::invalid_index || group.exception_) {
     co_return nullptr;
   }
   try {
@@ -264,11 +272,11 @@ ReturnPreviousTask when_any_task(WhenAnyTaskGroup &group,
         std::remove_reference_t<decltype(awaitable)>>::RetType;
     if constexpr (std::is_same_v<void, RealRetType>) {
       co_await awaitable;
-      result.template emplace<I + 1>();
+      result.template emplace<I>();
     } else {
-      // First type is std::monostate.
-      result.template emplace<I + 1>(co_await awaitable);
+      result.template emplace<I>(co_await awaitable);
     }
+    group.index = I;
   } catch (...) {
     group.exception_ = std::current_exception();
   }
@@ -277,9 +285,8 @@ ReturnPreviousTask when_any_task(WhenAnyTaskGroup &group,
 
 } // namespace detail::when_any
 
-template <Awaitable... As,
-          typename Variant = std::variant<
-              std::monostate, typename AwaitableTraits<As>::NonVoidRetType...>>
+template <Awaitable... As, typename Variant = std::variant<
+                               typename AwaitableTraits<As>::NonVoidRetType...>>
   requires(sizeof...(As) != 0)
 Task<Variant> when_any(As &&...as) {
   using namespace detail::when_any;
@@ -301,41 +308,42 @@ int main() {
   using namespace std::chrono_literals;
   auto *scheduler = Scheduler::get();
 
-  auto task3 = []() -> Task<void> {
+  auto task3 = []() -> Task<int> {
     auto task1 = []() -> Task<int> {
       std::cout << "task1 goes to sleep\n";
 
-      throw std::runtime_error{"wow"};
+      // throw std::runtime_error{"wow"};
 
-      co_await sleep_for(1s);
+      co_await sleep_for(500ms);
       std::cout << "task1 wakes up\n";
       co_return 1;
     }();
     auto task2 = []() -> Task<int> {
       std::cout << "task2 goes to sleep\n";
-      co_await sleep_for(2s);
+      co_await sleep_for(1000ms);
       std::cout << "task2 wakes up\n";
       co_return 2;
     }();
 
-    auto [result1, result2] = co_await when_all(task1, task2);
-    // auto result1 = co_await task1;
-    // auto result2 = co_await task2;
+    // auto [result1, result2] = co_await when_all(task1, task2);
+    // // auto result1 = co_await task1;
+    // // auto result2 = co_await task2;
+    // std::cout << "task1 result: " << result1 << std::endl;
+    // std::cout << "task2 result: " << result2 << std::endl;
+    // co_return result1 + result2;
 
-    std::cout << "task1 result: " << result1 << std::endl;
-    std::cout << "task2 result: " << result2 << std::endl;
-
-    // 2025/2/17 18:04 already fixed but exceptions are lost
-    // FIXME: task2 still runs and there's segmentation fault.
-    // auto result = co_await when_any(task1, task2);
-    // if (result.index() == 1) {
-    //   std::cout << "task1 finished first: " << std::get<1>(result) <<
-    //   std::endl;
-    // } else {
-    //   std::cout << "task2 finished first: " << std::get<2>(result) <<
-    //   std::endl;
-    // }
+    auto result = co_await when_any(task1, task2);
+    if (result.index() == 0) {
+      auto r = std::get<0>(result);
+      std::cout << "task1 finished first: " << r << std::endl;
+      co_return r;
+    } else {
+      auto r = std::get<1>(result);
+      std::cout << "task2 finished first: " << r << std::endl;
+      co_return r;
+    }
   }();
 
-  scheduler->run(task3);
+  auto result = scheduler->run(task3);
+  std::cout << "result" << "\n";
 }

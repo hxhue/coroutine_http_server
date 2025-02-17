@@ -113,10 +113,10 @@ struct Promise : detail::promise::PromiseReturnYield<Promise<T>, T> {
     if constexpr (!std::is_same_v<void, T>) {
       if (auto *pv = std::get_if<T>(&result_)) {
         auto ret = std::move(*pv);
-        result_ = std::monostate{};
+        // result_ = std::monostate{}; // TODO: do not reset the result
         return ret;
       }
-      throw std::runtime_error("The value is either consumed or not set");
+      throw std::runtime_error("The value is not set");
     }
   }
 
