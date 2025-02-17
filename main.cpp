@@ -139,9 +139,9 @@ inline auto sleep_for(Clock::duration duration) {
 namespace detail::when_all {
 
 struct WhenAllTaskGroup {
-  std::size_t count_;
-  std::exception_ptr exception_;
-  std::coroutine_handle<> prev_;
+  std::size_t count_{};
+  std::exception_ptr exception_{};
+  std::coroutine_handle<> prev_{};
 };
 
 struct WhenAllAwaiter {
@@ -172,7 +172,13 @@ template <typename R>
 ReturnPreviousTask when_all_task(WhenAllTaskGroup &group,
                                  Awaitable auto &awaitable, R &result) {
   try {
-    assign(result, co_await awaitable);
+    using RealRetType = typename AwaitableTraits<
+        std::remove_reference_t<decltype(awaitable)>>::RetType;
+    if constexpr (std::is_same_v<void, RealRetType>) {
+      co_await awaitable;
+    } else {
+      result = co_await awaitable;
+    }
   } catch (...) {
     group.exception_ = std::current_exception();
     co_return group.prev_;
@@ -187,13 +193,13 @@ ReturnPreviousTask when_all_task(WhenAllTaskGroup &group,
 } // namespace detail::when_all
 
 // when_all 假定了要等待的任务都是新任务，还不在调度器中
-template <Awaitable... As, typename R = std::tuple<
+template <Awaitable... As, typename Tuple = std::tuple<
                                typename AwaitableTraits<As>::NonVoidRetType...>>
   requires(sizeof...(As) != 0)
-Task<R> when_all(As &&...as) {
+Task<Tuple> when_all(As &&...as) {
   using namespace detail::when_all;
 
-  R result;
+  Tuple result;
   WhenAllTaskGroup group{.count_ = sizeof...(As)};
 
   // Create tasks from awaitables.
@@ -209,58 +215,80 @@ Task<R> when_all(As &&...as) {
   co_return result;
 }
 
-// namespace detail::when_any {
+namespace detail::when_any {
 
-// struct WhenAnyTaskGroup {
-//   static constexpr std::size_t invalid_index = static_cast<std::size_t>(-1);
+struct WhenAnyTaskGroup {
+  std::exception_ptr exception_{};
+  std::coroutine_handle<> prev_{};
+};
 
-//   std::size_t index_{invalid_index};
-//   std::exception_ptr exception_;
-//   std::coroutine_handle<> prev_;
-// };
+struct WhenAnyAwaiter {
+  bool await_ready() const { return tasks_.empty(); }
 
-// struct WhenAnyAwaiter {
-//   bool await_ready() const { return tasks_.empty(); }
+  std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
+    group_.prev_ = h;
+    auto s = Scheduler::get();
+    for (auto &task : tasks_.subspan(1)) {
+      // TODO: resume is not stackless!
+      task.coro_.resume();
+    }
+    return tasks_[0].coro_;
+  }
 
-//   std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
-//     group_.prev_ = h;
-//     auto s = Scheduler::get();
-//     for (auto &task : tasks_.subspan(1)) {
-//       // TODO: resume is not stackless!
-//       task.coro_.resume();
-//     }
-//     return tasks_[0];
-//   }
+  auto await_resume() const {
+    if (group_.exception_) {
+      std::rethrow_exception(group_.exception_);
+    }
+  }
 
-//   auto await_resume() const {
-//     if (group_.exception_) {
-//       std::rethrow_exception(group_.exception_);
-//     }
-//   }
+  std::span<const ReturnPreviousTask> tasks_;
+  WhenAnyTaskGroup &group_;
+};
 
-//   std::span<const std::coroutine_handle<>> tasks_;
-//   WhenAnyTaskGroup &group_;
-// };
+template <size_t I, typename Variant>
+ReturnPreviousTask when_any_task(WhenAnyTaskGroup &group,
+                                 Awaitable auto &awaitable, Variant &result) {
+  // One of the tasks is already finished.
+  if (result.index() != 0) {
+    co_return nullptr;
+  }
+  try {
+    using RealRetType = typename AwaitableTraits<
+        std::remove_reference_t<decltype(awaitable)>>::RetType;
+    if constexpr (std::is_same_v<void, RealRetType>) {
+      co_await awaitable;
+      result.template emplace<I + 1>();
+    } else {
+      // First type is std::monostate.
+      result.template emplace<I + 1>(co_await awaitable);
+    }
+  } catch (...) {
+    group.exception_ = std::current_exception();
+  }
+  co_return group.prev_;
+}
 
-// template <typename R>
-// Task<void> when_any_task(WhenAnyTaskGroup &group, Awaitable auto &awaitable,
-//                          R &result, std::size_t index) {
-//   try {
-//     assign(result, co_await awaitable);
-//   } catch (...) {
-//     group.exception_ = std::current_exception();
-//     Scheduler::get()->add_task(group.prev_);
-//   }
-//   if (group.index_ == WhenAnyTaskGroup::invalid_index) {
-//     group.index_ = index;
-//   }
-//   // TODO: cancel other tasks
-//   Scheduler::get()->add_task(group.prev_);
-// }
+} // namespace detail::when_any
 
-// } // namespace detail::when_any
+template <Awaitable... As,
+          typename Variant = std::variant<
+              std::monostate, typename AwaitableTraits<As>::NonVoidRetType...>>
+  requires(sizeof...(As) != 0)
+Task<Variant> when_any(As &&...as) {
+  using namespace detail::when_any;
 
-// Task<size_t> when_any() { ... }
+  Variant result;
+  WhenAnyTaskGroup group{};
+
+  // Create tasks from awaitables.
+  auto idx = std::make_index_sequence<sizeof...(As)>{};
+  auto tasks = [&]<std::size_t... I>(std::index_sequence<I...>) {
+    return std::array{(when_any_task<I>(group, as, result))...};
+  }(idx);
+
+  co_await WhenAnyAwaiter{.tasks_ = tasks, .group_ = group};
+  co_return result;
+}
 
 int main() {
   using namespace std::chrono_literals;
@@ -280,12 +308,20 @@ int main() {
       co_return 2;
     }();
 
-    auto [result1, result2] = co_await when_all(task1, task2);
-    // auto result1 = co_await task1;
-    // auto result2 = co_await task2;
+    // auto [result1, result2] = co_await when_all(task1, task2);
+    // // auto result1 = co_await task1;
+    // // auto result2 = co_await task2;
 
-    std::cout << "task1 result: " << result1 << std::endl;
-    std::cout << "task2 result: " << result2 << std::endl;
+    // std::cout << "task1 result: " << result1 << std::endl;
+    // std::cout << "task2 result: " << result2 << std::endl;
+
+    // FIXME: task2 still runs and there's segmentation fault.
+    auto result = co_await when_any(task1, task2);
+    if (result.index() == 1) {
+      std::cout << "task1 finished first: " << std::get<1>(result) << std::endl;
+    } else {
+      std::cout << "task2 finished first: " << std::get<2>(result) << std::endl;
+    }
   }();
 
   scheduler->run(task3);

@@ -22,13 +22,7 @@ concept Awaitable = Awaiter<A> || requires(A a) {
 };
 
 namespace detail {
-struct Void {};
-
-template <typename T, typename U> auto &assign(U &lhs, T &&rhs) {
-  return lhs = std::forward<T>(rhs);
-}
-
-template <typename T> void assign(Void &lhs, T &&rhs) {}
+struct Empty {};
 
 } // namespace detail
 
@@ -37,7 +31,7 @@ template <class A> struct AwaitableTraits;
 template <Awaiter A> struct AwaitableTraits<A> {
   using RetType = decltype(std::declval<A>().await_resume());
   using NonVoidRetType =
-      std::conditional_t<std::is_same_v<void, RetType>, detail::Void, RetType>;
+      std::conditional_t<std::is_same_v<void, RetType>, detail::Empty, RetType>;
 };
 
 template <class A>
