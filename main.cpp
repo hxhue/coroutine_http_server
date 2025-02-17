@@ -6,6 +6,7 @@
 #include <exception>
 #include <iostream>
 #include <queue>
+#include <set>
 #include <thread>
 #include <type_traits>
 
@@ -13,56 +14,80 @@
 
 using Clock = std::chrono::steady_clock;
 
-struct Scheduler {
-  struct Timer {
-    // For min-heap.
-    bool operator<(Timer const &timer) const { return expire > timer.expire; }
+struct TimedPromise;
+using TimedCoroutine = std::coroutine_handle<TimedPromise>;
 
-    Clock::time_point expire;
-    std::coroutine_handle<> h;
-  };
+struct TimedPromise : Promise<void> {
+  TimedPromise() = default;
 
-  void add_task(std::coroutine_handle<> h) {
-    if (h) {
-      // A new task gets scheduled early.
-      ready_queue_.push_front(h);
+  TimedPromise(Clock::time_point expire) : expire_(expire) {}
+
+  TimedPromise(Clock::time_point expire, std::set<TimedCoroutine> *tree)
+      : expire_(expire), tree_(tree) {}
+
+  TimedPromise(TimedPromise &&other) = delete;
+
+  ~TimedPromise() {
+    // TimedPromise does not own the coroutine handle, so it does not destroy
+    // it.
+    if (tree_) {
+      auto h = std::coroutine_handle<TimedPromise>::from_promise(*this);
+      tree_->erase(h);
     }
   }
 
-  // Don't pass by value! Passing by value causes the handle to destroy inside
-  // the argument's destructor.
-  template <typename T> void add_task(Task<T> const &task) {
-    add_task(task.coro_);
+  auto get_return_object() {
+    return std::coroutine_handle<TimedPromise>::from_promise(*this);
   }
 
-  void add_timer(Clock::time_point expire, std::coroutine_handle<> h) {
-    auto timer = Timer{expire, h};
-    timer_queue_.push(timer);
+  bool operator<(const TimedPromise &other) const {
+    return expire_ < other.expire_;
   }
 
-  void main_loop() {
-    while (!timer_queue_.empty() || !ready_queue_.empty()) {
-      while (!ready_queue_.empty()) {
-        auto task = ready_queue_.front();
-        ready_queue_.pop_front();
-        // Run the task until it's finished, unless it co_awaits on a sleep
-        // function which put the task in the queue again.
-        task.resume();
-      }
-      if (!timer_queue_.empty()) {
-        auto top = timer_queue_.top();
-        if (top.expire <= Clock::now()) {
-          timer_queue_.pop();
-          ready_queue_.push_back(top.h);
+  Clock::time_point expire_{Clock::now()};
+  std::set<TimedCoroutine> *tree_{nullptr};
+};
+
+bool operator<(const std::coroutine_handle<TimedPromise> &lhs,
+               const std::coroutine_handle<TimedPromise> &rhs) {
+  auto t1 = lhs.promise().expire_;
+  auto t2 = rhs.promise().expire_;
+  if (t1 != t2) {
+    return t1 < t2;
+  }
+  return lhs.address() < rhs.address();
+}
+
+struct Scheduler {
+  void add_task(std::coroutine_handle<TimedPromise> h) {
+    coroutines_.insert(h);
+  }
+
+  void run(std::coroutine_handle<> entry_point) {
+    while (!entry_point.done()) {
+      entry_point.resume();
+      // Either finished or left some timers.
+      while (!coroutines_.empty()) {
+        auto it = coroutines_.begin();
+        if (it->promise().expire_ <= Clock::now()) {
+          decltype(coroutines_) tmp; // RAII protection
+          auto nh = coroutines_.extract(it);
+          auto coro = nh.value();
+          tmp.insert(std::move(nh));
+          coro.resume(); // May throw
         } else {
-          std::this_thread::sleep_until(top.expire);
+          std::this_thread::sleep_until(it->promise().expire_);
         }
       }
     }
   }
 
+  template <typename... Ts> void run(Task<Ts...> const &task) {
+    run(task.coro_);
+  }
+
   // If the function returns by reference, the result may be copied
-  // accidentially by auto instead of auto&. Returning by pointer is safer.
+  // accidentally by auto instead of auto&. Returning by pointer is safer.
   static Scheduler *get() {
     static Scheduler instance;
     return &instance;
@@ -71,17 +96,18 @@ struct Scheduler {
   Scheduler() = default;
   Scheduler(Scheduler &&) = delete;
 
-  std::deque<std::coroutine_handle<>> ready_queue_;
-  std::deque<std::coroutine_handle<>> waiting_queue_; // TODO: not used
-  std::priority_queue<Timer> timer_queue_;
+  std::set<TimedCoroutine> coroutines_;
 };
 
 struct SleepAwaiter {
-  bool await_ready() const { return expire_time_ <= Clock::now(); }
+  bool await_ready() const { return expire_ <= Clock::now(); }
 
-  std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
-    Scheduler::get()->add_timer(expire_time_, h);
-    return std::noop_coroutine();
+  void await_suspend(std::coroutine_handle<TimedPromise> h) {
+    if (scheduler_) {
+      h.promise().expire_ = expire_;
+      scheduler_->add_task(h);
+    }
+    // return std::noop_coroutine();
 
     // UB: A segmentation fault can be caused by erasing the frame first, then
     // resuming the erased frame! The details may differ but it's UB.
@@ -97,17 +123,17 @@ struct SleepAwaiter {
 
   auto await_resume() const noexcept {}
 
-  explicit SleepAwaiter(Clock::time_point expire) : expire_time_(expire) {}
-
-  Clock::time_point expire_time_;
+  Clock::time_point expire_{Clock::now()};
+  Scheduler *scheduler_{nullptr};
 };
 
-inline Task<void> sleep_until(Clock::time_point expire) {
-  co_return co_await SleepAwaiter(expire);
+inline Task<void, TimedPromise> sleep_until(Clock::time_point expire) {
+  co_await SleepAwaiter{expire, Scheduler::get()};
+  co_return;
 }
 
-inline Task<void> sleep_for(Clock::duration duration) {
-  co_return co_await SleepAwaiter(Clock::now() + duration);
+inline auto sleep_for(Clock::duration duration) {
+  return sleep_until(Clock::now() + duration);
 }
 
 namespace detail::when_all {
@@ -125,7 +151,9 @@ struct WhenAllAwaiter {
     group_.prev_ = h;
     auto s = Scheduler::get();
     for (auto &task : tasks_.subspan(1)) {
-      s->add_task(task);
+      // s->add_task(task);
+      // TODO: resume is not stackless!
+      task.coro_.resume();
     }
     return tasks_[0].coro_;
   }
@@ -136,23 +164,24 @@ struct WhenAllAwaiter {
     }
   }
 
-  std::span<const Task<void>> tasks_;
+  std::span<const ReturnPreviousTask> tasks_;
   WhenAllTaskGroup &group_;
 };
 
 template <typename R>
-Task<void> when_all_task(WhenAllTaskGroup &group, Awaitable auto &awaitable,
-                         R &result) {
+ReturnPreviousTask when_all_task(WhenAllTaskGroup &group,
+                                 Awaitable auto &awaitable, R &result) {
   try {
     assign(result, co_await awaitable);
   } catch (...) {
     group.exception_ = std::current_exception();
-    Scheduler::get()->add_task(group.prev_);
+    co_return group.prev_;
   }
   assert(group.count_ > 0);
   if (--group.count_ == 0) {
-    Scheduler::get()->add_task(group.prev_);
+    co_return group.prev_;
   }
+  co_return nullptr;
 }
 
 } // namespace detail::when_all
@@ -180,53 +209,56 @@ Task<R> when_all(As &&...as) {
   co_return result;
 }
 
-namespace detail::when_any {
+// namespace detail::when_any {
 
-struct WhenAnyTaskGroup {
-  std::size_t index_{-1UL};
-  std::exception_ptr exception_;
-  std::coroutine_handle<> prev_;
-};
+// struct WhenAnyTaskGroup {
+//   static constexpr std::size_t invalid_index = static_cast<std::size_t>(-1);
 
-struct WhenAnyAwaiter {
-  bool await_ready() const { return tasks_.empty(); }
+//   std::size_t index_{invalid_index};
+//   std::exception_ptr exception_;
+//   std::coroutine_handle<> prev_;
+// };
 
-  std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
-    group_.prev_ = h;
-    auto s = Scheduler::get();
-    for (auto &task : tasks_.subspan(1)) {
-      s->add_task(task);
-    }
-    return tasks_[0];
-  }
+// struct WhenAnyAwaiter {
+//   bool await_ready() const { return tasks_.empty(); }
 
-  auto await_resume() const {
-    if (group_.exception_) {
-      std::rethrow_exception(group_.exception_);
-    }
-  }
+//   std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
+//     group_.prev_ = h;
+//     auto s = Scheduler::get();
+//     for (auto &task : tasks_.subspan(1)) {
+//       // TODO: resume is not stackless!
+//       task.coro_.resume();
+//     }
+//     return tasks_[0];
+//   }
 
-  std::span<const std::coroutine_handle<>> tasks_;
-  WhenAnyTaskGroup &group_;
-};
+//   auto await_resume() const {
+//     if (group_.exception_) {
+//       std::rethrow_exception(group_.exception_);
+//     }
+//   }
 
-template <typename R>
-Task<void> when_any_task(WhenAnyTaskGroup &group, Awaitable auto &awaitable,
-                         R &result, std::size_t index) {
-  try {
-    assign(result, co_await awaitable);
-  } catch (...) {
-    group.exception_ = std::current_exception();
-    Scheduler::get()->add_task(group.prev_);
-  }
-  if (group.index_ == -1UL) {
-    group.index_ = index;
-  }
-  // TODO: cancel other tasks
-  Scheduler::get()->add_task(group.prev_);
-}
+//   std::span<const std::coroutine_handle<>> tasks_;
+//   WhenAnyTaskGroup &group_;
+// };
 
-} // namespace detail::when_any
+// template <typename R>
+// Task<void> when_any_task(WhenAnyTaskGroup &group, Awaitable auto &awaitable,
+//                          R &result, std::size_t index) {
+//   try {
+//     assign(result, co_await awaitable);
+//   } catch (...) {
+//     group.exception_ = std::current_exception();
+//     Scheduler::get()->add_task(group.prev_);
+//   }
+//   if (group.index_ == WhenAnyTaskGroup::invalid_index) {
+//     group.index_ = index;
+//   }
+//   // TODO: cancel other tasks
+//   Scheduler::get()->add_task(group.prev_);
+// }
+
+// } // namespace detail::when_any
 
 // Task<size_t> when_any() { ... }
 
@@ -248,7 +280,6 @@ int main() {
       co_return 2;
     }();
 
-    // FIXME: crash in when_all
     auto [result1, result2] = co_await when_all(task1, task2);
     // auto result1 = co_await task1;
     // auto result2 = co_await task2;
@@ -257,6 +288,5 @@ int main() {
     std::cout << "task2 result: " << result2 << std::endl;
   }();
 
-  scheduler->add_task(task3);
-  scheduler->main_loop();
+  scheduler->run(task3);
 }

@@ -131,8 +131,8 @@ struct Promise : detail::promise::PromiseReturnYield<Promise<T>, T> {
   detail::promise::PromiseVariant<T> result_;
 };
 
-template <typename T> struct Task {
-  using promise_type = Promise<T>;
+template <typename T = void, typename P = Promise<T>> struct Task {
+  using promise_type = P;
 
   Task(std::coroutine_handle<promise_type> coro) : coro_(std::move(coro)) {}
 
@@ -174,4 +174,52 @@ template <typename T> struct Task {
   auto operator co_await() const { return TaskAwaiter(coro_); }
 
   std::coroutine_handle<promise_type> coro_{};
+};
+
+struct ReturnPreviousAwaiter {
+  bool await_ready() const noexcept { return false; }
+
+  std::coroutine_handle<>
+  await_suspend(std::coroutine_handle<> h) const noexcept {
+    return prev_ ? prev_ : std::noop_coroutine();
+  }
+
+  void await_resume() const noexcept {}
+
+  std::coroutine_handle<> prev_{nullptr};
+};
+
+struct ReturnPreviousPromise {
+  auto initial_suspend() noexcept { return std::suspend_always(); }
+
+  auto final_suspend() noexcept { return ReturnPreviousAwaiter(prev_); }
+
+  void unhandled_exception() { throw; }
+
+  // Saves the coroutine handle returned by co_return and resumes it when
+  // this->final_suspend() is co_awaited.
+  void return_value(std::coroutine_handle<> previous) noexcept {
+    prev_ = previous;
+  }
+
+  auto get_return_object() {
+    return std::coroutine_handle<ReturnPreviousPromise>::from_promise(*this);
+  }
+
+  std::coroutine_handle<> prev_{nullptr};
+
+  ReturnPreviousPromise &operator=(ReturnPreviousPromise &&) = delete;
+};
+
+struct ReturnPreviousTask {
+  using promise_type = ReturnPreviousPromise;
+
+  ReturnPreviousTask(std::coroutine_handle<promise_type> coroutine) noexcept
+      : coro_(coroutine) {}
+
+  ReturnPreviousTask(ReturnPreviousTask &&) = delete;
+
+  ~ReturnPreviousTask() { coro_.destroy(); }
+
+  std::coroutine_handle<promise_type> coro_;
 };
