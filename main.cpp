@@ -15,15 +15,13 @@
 
 using Clock = std::chrono::steady_clock;
 
-struct TimedPromise;
-using TimedCoroutine = std::coroutine_handle<TimedPromise>;
-
 struct TimedPromise : Promise<void> {
   TimedPromise() = default;
 
   TimedPromise(Clock::time_point expire) : expire_(expire) {}
 
-  TimedPromise(Clock::time_point expire, std::set<TimedCoroutine> *tree)
+  TimedPromise(Clock::time_point expire,
+               std::set<std::coroutine_handle<TimedPromise>> *tree)
       : expire_(expire), tree_(tree) {}
 
   TimedPromise(TimedPromise &&other) = delete;
@@ -53,7 +51,7 @@ struct TimedPromise : Promise<void> {
   }
 
   Clock::time_point expire_{Clock::now()};
-  std::set<TimedCoroutine> *tree_{nullptr};
+  std::set<std::coroutine_handle<TimedPromise>> *tree_{nullptr};
 };
 
 bool operator<(const std::coroutine_handle<TimedPromise> &lhs,
@@ -68,15 +66,15 @@ bool operator<(const std::coroutine_handle<TimedPromise> &lhs,
 
 struct Scheduler {
   void add_task(std::coroutine_handle<TimedPromise> h) {
-    coroutines_.insert(h);
+    timed_coros_.insert(h);
   }
 
   template <typename P> auto run(std::coroutine_handle<P> entry_point) {
     while (!entry_point.done()) {
       entry_point.resume();
       // Either finished or left some timers.
-      while (!coroutines_.empty()) {
-        auto it = coroutines_.begin();
+      while (!timed_coros_.empty()) {
+        auto it = timed_coros_.begin();
         if (it->promise().expire_ <= Clock::now()) {
           auto coro = *it;
           coro.resume();
@@ -106,7 +104,8 @@ struct Scheduler {
   Scheduler() = default;
   Scheduler(Scheduler &&) = delete;
 
-  std::set<TimedCoroutine> coroutines_;
+  // std::deque<std::coroutine_handle<>> ready_coros_;
+  std::set<std::coroutine_handle<TimedPromise>> timed_coros_;
 };
 
 struct SleepAwaiter {
@@ -116,7 +115,7 @@ struct SleepAwaiter {
     if (scheduler_) {
       auto &promise = h.promise();
       promise.expire_ = expire_;
-      promise.tree_ = &scheduler_->coroutines_;
+      promise.tree_ = &scheduler_->timed_coros_;
       scheduler_->add_task(h);
     }
     // return std::noop_coroutine();
@@ -320,30 +319,28 @@ int main() {
     }();
     auto task2 = []() -> Task<int> {
       std::cout << "task2 goes to sleep\n";
-      co_await sleep_for(1000ms);
+      co_await sleep_for(700ms);
       std::cout << "task2 wakes up\n";
       co_return 2;
     }();
 
-    // auto [result1, result2] = co_await when_all(task1, task2);
-    // // auto result1 = co_await task1;
-    // // auto result2 = co_await task2;
-    // std::cout << "task1 result: " << result1 << std::endl;
-    // std::cout << "task2 result: " << result2 << std::endl;
-    // co_return result1 + result2;
+    auto [result1, result2] = co_await when_all(task1, task2);
+    std::cout << "task1 result: " << result1 << std::endl;
+    std::cout << "task2 result: " << result2 << std::endl;
+    co_return result1 + result2;
 
-    auto result = co_await when_any(task1, task2);
-    if (result.index() == 0) {
-      auto r = std::get<0>(result);
-      std::cout << "task1 finished first: " << r << std::endl;
-      co_return r;
-    } else {
-      auto r = std::get<1>(result);
-      std::cout << "task2 finished first: " << r << std::endl;
-      co_return r;
-    }
+    // auto result = co_await when_any(task1, task2);
+    // if (result.index() == 0) {
+    //   auto r = std::get<0>(result);
+    //   std::cout << "task1 finished first: " << r << std::endl;
+    //   co_return r;
+    // } else {
+    //   auto r = std::get<1>(result);
+    //   std::cout << "task2 finished first: " << r << std::endl;
+    //   co_return r;
+    // }
   }();
 
   auto result = scheduler->run(task3);
-  std::cout << "result" << "\n";
+  std::cout << "result: " << result << "\n";
 }
