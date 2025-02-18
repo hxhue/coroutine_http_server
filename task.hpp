@@ -414,7 +414,8 @@ ReturnPreviousTask when_all_task(WhenAllTaskGroup &group,
 
 } // namespace detail::when_all
 
-// when_all 假定了要等待的任务都是新任务，还不在调度器中
+// The `when_all` function assumes that the tasks to be awaited are all new
+// tasks and are not yet in the scheduler.
 template <Awaitable... As, typename Tuple = std::tuple<
                                typename AwaitableTraits<As>::NonVoidRetType...>>
   requires(sizeof...(As) != 0)

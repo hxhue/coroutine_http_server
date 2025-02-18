@@ -7,6 +7,9 @@
     - They both assume the tasks passed as arguments are not in the scheduler.
     - When the last task of the `when_all` group finishes, it awakes the previous suspended task (which is waiting for `when_all` coroutine to finish).
     - When the first task finishes, `when_any` destroys the other tasks by returning from the coroutine body and letting the temporary tasks' destructors destroy the coroutine handles and remove them from the scheduler.
+    - <mark>Currently `when_all` and `when_any` calls `resume`</mark>, so it's not completely stackless.
+- `EpollScheduler`
+  - Instead of registering function pointers to `epoll_event`, register a pointer to `EpollFilePromise`. When When epoll gives us an event, we get a coroutine handle to resume. Compared to a normal function pointer, the coroutine can return without finishing, the semantic is being launched rather than having finished.
 
 ## `PreviousTask` (`Task`)
 

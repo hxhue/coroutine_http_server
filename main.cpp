@@ -1,47 +1,89 @@
 #include <cassert>
-#include <chrono>
+#include <cerrno>
 #include <iostream>
 
+#include <fcntl.h>
+#include <sys/epoll.h>
+#include <unistd.h>
+
+#include "epoll.hpp"
 #include "task.hpp"
 
+// May have partial read.
+inline Task<std::string> reader() {
+  co_await wait_file(*EpollScheduler::get(), 0, EPOLLIN);
+  std::string s;
+  while (true) {
+    char c;
+    ssize_t len = read(0, &c, 1);
+    if (len == -1) {
+      if (errno != EWOULDBLOCK) {
+        throw std::system_error(errno, std::system_category());
+      }
+      break;
+    }
+    s.push_back(c);
+  }
+  co_return s;
+}
+
 int main() {
-  using namespace std::chrono_literals;
-  auto *scheduler = Scheduler::get();
+  int read_fd = STDIN_FILENO;
+  check_syscall(fcntl(read_fd, F_SETFL, O_NONBLOCK));
 
-  auto task3 = []() -> Task<int> {
-    auto task1 = []() -> Task<int> {
-      std::cout << "task1 goes to sleep\n";
-
-      // throw std::runtime_error{"wow"};
-
-      co_await sleep_for(500ms);
-      std::cout << "task1 wakes up\n";
-      co_return 1;
-    }();
-    auto task2 = []() -> Task<int> {
-      std::cout << "task2 goes to sleep\n";
-      co_await sleep_for(700ms);
-      std::cout << "task2 wakes up\n";
-      co_return 2;
-    }();
-
-    auto [result1, result2] = co_await when_all(task1, task2);
-    std::cout << "task1 result: " << result1 << std::endl;
-    std::cout << "task2 result: " << result2 << std::endl;
-    co_return result1 + result2;
-
-    // auto result = co_await when_any(task1, task2);
-    // if (result.index() == 0) {
-    //   auto r = std::get<0>(result);
-    //   std::cout << "task1 finished first: " << r << std::endl;
-    //   co_return r;
-    // } else {
-    //   auto r = std::get<1>(result);
-    //   std::cout << "task2 finished first: " << r << std::endl;
-    //   co_return r;
-    // }
+  auto task = []() -> Task<void> {
+    while (true) {
+      auto s = co_await reader();
+      std::cout << "Got " << escape(s) << "\n";
+      if (s == "quit\n")
+        break;
+    }
   }();
+  EpollScheduler::get()->run(task);
 
-  auto result = scheduler->run(task3);
-  std::cout << "result: " << result << "\n";
+  return 0;
+
+  // int epfd = check_syscall(epoll_create1(0));
+  // struct epoll_event event;
+  // event.events = EPOLLIN;
+  // event.data.fd = read_fd;
+  // check_syscall(epoll_ctl(epfd, EPOLL_CTL_ADD, read_fd, &event));
+
+  // while (true) {
+  //   struct epoll_event ebuf[64];
+  //   // Returns when there's signal/event/timeout.
+  //   errno = 0;
+  //   int ret =
+  //       check_syscall(epoll_wait(epfd, ebuf, std::size(ebuf), 1000 /*ms*/));
+  //   if (ret == 0) {
+  //     std::cout << "epoll timeout\n";
+  //     continue;
+  //   }
+  //   if (errno == EINTR) {
+  //     std::cout << "epoll interrupted\n";
+  //     continue;
+  //   }
+  //   std::cout << "ret: " << ret << "\n";
+  //   for (int i = 0; i < ret; ++i) {
+  //     auto &ev = ebuf[i];
+  //     int fd = ev.data.fd;
+  //     char ch;
+  //     while (true) {
+  //       errno = 0;
+  //       ssize_t len = read(fd, &ch, 1);
+  //       if (errno == EAGAIN) {
+  //         std::cout << "read would block, try again\n";
+  //         break;
+  //       } else if (len == 0) {
+  //         std::cout << "end of file (which is unlikely to happen because
+  //         epoll "
+  //                      "reports an event!)\n";
+  //         break;
+  //       } else {
+  //         check_syscall(len);
+  //         std::cout << "read: " << escape(ch) << "\n";
+  //       }
+  //     }
+  //   }
+  // }
 }
