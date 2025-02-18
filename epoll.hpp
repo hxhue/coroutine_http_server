@@ -13,6 +13,8 @@ struct EpollFilePromise : Promise<void> {
 
   EpollFilePromise &operator=(EpollFilePromise &&) = delete;
 
+  inline ~EpollFilePromise();
+
   int fd_;
   uint32_t events_;
 };
@@ -25,16 +27,19 @@ struct EpollScheduler {
     check_syscall(epoll_ctl(epoll_, EPOLL_CTL_ADD, promise.fd_, &event));
   }
 
+  void remove_listener(EpollFilePromise &promise) {
+    check_syscall(epoll_ctl(epoll_, EPOLL_CTL_DEL, promise.fd_, NULL));
+  }
+
   // Call epoll_wait once and run callbacks(coroutines).
-  void try_run() {
+  void try_run(int timeout = -1) {
     struct epoll_event ebuf[10];
-    int res = check_syscall(epoll_wait(epoll_, ebuf, 10, -1));
+    int res = check_syscall(epoll_wait(epoll_, ebuf, 10, timeout));
     for (int i = 0; i < res; i++) {
       auto &event = ebuf[i];
 
       // The pointer comes from add_listener.
       auto &promise = *(EpollFilePromise *)event.data.ptr;
-      check_syscall(epoll_ctl(epoll_, EPOLL_CTL_DEL, promise.fd_, NULL));
 
       // When epoll gives us an event, we get a coroutine handle from data.ptr
       // and resume it.
@@ -57,13 +62,17 @@ struct EpollScheduler {
 
   ~EpollScheduler() { check_syscall(close(epoll_)); }
 
-  static EpollScheduler *get() {
+  static EpollScheduler &get() {
     static EpollScheduler instance;
-    return &instance;
+    return instance;
   }
 
   int epoll_ = check_syscall(epoll_create1(STDIN_FILENO));
 };
+
+EpollFilePromise::~EpollFilePromise() {
+  EpollScheduler::get().remove_listener(*this);
+}
 
 struct EpollFileAwaiter {
   bool await_ready() const noexcept { return false; }

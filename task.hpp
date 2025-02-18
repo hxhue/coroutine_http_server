@@ -138,12 +138,7 @@ struct [[nodiscard("maybe co_await this task?")]] Task {
   Task(Task const &) = delete;
   Task(Task &&) = default;
 
-  ~Task() {
-    if (coro_) {
-      coro_.destroy();
-      coro_ = nullptr;
-    }
-  }
+  ~Task() { coro_.destroy(); }
 
   struct TaskAwaiter {
     bool await_ready() const noexcept { return false; }
@@ -235,7 +230,8 @@ struct TimedPromise : Promise<void> {
 
   ~TimedPromise() {
     // TimedPromise does not own the coroutine handle, so it does not destroy
-    // it.
+    // it, but it can remove itself from the tree to avoid being resumed again.
+    //
     // std::cout << "~TimedPromise():\n";
     // std::cout << "  tree: " << tree_ << "\n";
     if (tree_) {
@@ -245,7 +241,7 @@ struct TimedPromise : Promise<void> {
       tree_ = nullptr;
       // std::cout << "  erased: " << h.address() << std::endl;
     } else {
-      std::cerr << "~TimedPromise(): tree_ is null\n";
+      // std::cerr << "~TimedPromise(): tree_ is null\n";
     }
   }
 
@@ -282,15 +278,18 @@ struct Scheduler {
       // Either finished or left some timers.
       while (!timed_coros_.empty()) {
         auto it = timed_coros_.begin();
-        if (it->promise().expire_ <= Clock::now()) {
+        auto &promise = it->promise();
+        auto now = Clock::now();
+        if (promise.expire_ <= now) {
           auto coro = *it;
           coro.resume();
           // TimedPromise is special and is only created by sleep functions.
           // Their coroutines do not contain co_yield, and we can assume that
-          // when coro.resume() returns, coro.done() is true.
+          // when coro.resume() returns, coro is destroyed. NOTE: when a
+          // coroutine handle is destroyed, method done() is unreliable anymore.
           //
-          // When that happens, it will destroy the promise and remove itself.
-          // So don't erase the coroutine handle here.
+          // When that happens, it will also remove itself from the tree, so
+          // don't erase the coroutine handle here.
           //
           // coroutines_.erase(it);
         } else {
@@ -305,11 +304,28 @@ struct Scheduler {
     return run(task.coro_);
   }
 
-  // If the function returns by reference, the result may be copied
-  // accidentally by auto instead of auto&. Returning by pointer is safer.
-  static Scheduler *get() {
+  // Returns the time we still have to wait for the next task to be ready.
+  // Returns std::nullopt if there's no task to wait.
+  std::optional<Clock::duration> try_run() {
+    // There's no entry point, so the task must be put by other functions.
+    while (!timed_coros_.empty()) {
+      auto it = timed_coros_.begin();
+      auto &promise = it->promise();
+      // Get the result and don't let it change.
+      auto now = Clock::now();
+      if (promise.expire_ <= now) {
+        auto coro = *it;
+        coro.resume();
+      } else {
+        return promise.expire_ - now;
+      }
+    }
+    return std::nullopt;
+  }
+
+  static Scheduler &get() {
     static Scheduler instance;
-    return &instance;
+    return instance;
   }
 
   Scheduler() = default;
@@ -323,12 +339,10 @@ struct SleepAwaiter {
   bool await_ready() const noexcept { return expire_ <= Clock::now(); }
 
   void await_suspend(std::coroutine_handle<TimedPromise> h) noexcept {
-    if (scheduler_) {
-      auto &promise = h.promise();
-      promise.expire_ = expire_;
-      promise.tree_ = &scheduler_->timed_coros_;
-      scheduler_->add_task(h);
-    }
+    auto &promise = h.promise();
+    promise.expire_ = expire_;
+    promise.tree_ = &scheduler_.timed_coros_;
+    scheduler_.add_task(h);
     // return std::noop_coroutine();
 
     // UB: A segmentation fault can be caused by erasing the frame first, then
@@ -346,12 +360,11 @@ struct SleepAwaiter {
   auto await_resume() const {}
 
   Clock::time_point expire_{Clock::now()};
-  Scheduler *scheduler_{nullptr};
+  Scheduler &scheduler_;
 };
 
 inline Task<void, TimedPromise> sleep_until(Clock::time_point expire) {
-  co_await SleepAwaiter{expire, Scheduler::get()};
-  co_return;
+  co_return co_await SleepAwaiter{expire, Scheduler::get()};
 }
 
 inline auto sleep_for(Clock::duration duration) {
@@ -371,9 +384,7 @@ struct WhenAllAwaiter {
 
   std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) noexcept {
     group_.prev_ = h;
-    auto s = Scheduler::get();
     for (auto &task : tasks_.subspan(1)) {
-      // s->add_task(task);
       // TODO: resume is not stackless!
       task.coro_.resume();
     }
@@ -453,7 +464,6 @@ struct WhenAnyAwaiter {
 
   std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) noexcept {
     group_.prev_ = h;
-    auto s = Scheduler::get();
     for (auto &task : tasks_.subspan(1)) {
       // TODO: resume is not stackless!
       task.coro_.resume();

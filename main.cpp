@@ -11,7 +11,20 @@
 
 // May have partial read.
 inline Task<std::string> reader() {
-  co_await wait_file(*EpollScheduler::get(), 0, EPOLLIN);
+  using namespace std::chrono_literals;
+
+  // sleep_for belongs to Scheduler and it can never finish if there's only
+  // EpollScheduler. We need to manage 2 schedulers together.
+  // The waiter must be created outside.
+  //
+  // TODO: waiter should remove the file descriptor from epoll in its
+  // destructor.
+  auto waiter = wait_file(EpollScheduler::get(), 0, EPOLLIN);
+  auto result = co_await when_any(waiter, sleep_for(1s));
+  if (result.index() == 1) {
+    std::cout << "Returning because of timeout.\n";
+    co_return "";
+  }
   std::string s;
   while (true) {
     char c;
@@ -34,56 +47,27 @@ int main() {
   auto task = []() -> Task<void> {
     while (true) {
       auto s = co_await reader();
-      std::cout << "Got " << escape(s) << "\n";
+      std::cout << "Got \"" << escape(s) << "\"\n";
       if (s == "quit\n")
         break;
     }
   }();
-  EpollScheduler::get()->run(task);
 
-  return 0;
-
-  // int epfd = check_syscall(epoll_create1(0));
-  // struct epoll_event event;
-  // event.events = EPOLLIN;
-  // event.data.fd = read_fd;
-  // check_syscall(epoll_ctl(epfd, EPOLL_CTL_ADD, read_fd, &event));
-
-  // while (true) {
-  //   struct epoll_event ebuf[64];
-  //   // Returns when there's signal/event/timeout.
-  //   errno = 0;
-  //   int ret =
-  //       check_syscall(epoll_wait(epfd, ebuf, std::size(ebuf), 1000 /*ms*/));
-  //   if (ret == 0) {
-  //     std::cout << "epoll timeout\n";
-  //     continue;
-  //   }
-  //   if (errno == EINTR) {
-  //     std::cout << "epoll interrupted\n";
-  //     continue;
-  //   }
-  //   std::cout << "ret: " << ret << "\n";
-  //   for (int i = 0; i < ret; ++i) {
-  //     auto &ev = ebuf[i];
-  //     int fd = ev.data.fd;
-  //     char ch;
-  //     while (true) {
-  //       errno = 0;
-  //       ssize_t len = read(fd, &ch, 1);
-  //       if (errno == EAGAIN) {
-  //         std::cout << "read would block, try again\n";
-  //         break;
-  //       } else if (len == 0) {
-  //         std::cout << "end of file (which is unlikely to happen because
-  //         epoll "
-  //                      "reports an event!)\n";
-  //         break;
-  //       } else {
-  //         check_syscall(len);
-  //         std::cout << "read: " << escape(ch) << "\n";
-  //       }
-  //     }
-  //   }
-  // }
+  auto &epoll_sched = EpollScheduler::get();
+  auto &sched = Scheduler::get();
+  task.coro_.resume();
+  while (!task.coro_.done()) {
+    using namespace std::chrono;
+    auto delay = sched.try_run();
+    if (delay.has_value()) {
+      std::cout << "Next timer in " << delay.value() << "\n";
+      auto ms = duration_cast<milliseconds>(delay.value()).count();
+      if (ms <= 0)
+        ms = 1;
+      epoll_sched.try_run(ms);
+    } else {
+      std::cout << "No timers\n";
+      epoll_sched.try_run();
+    }
+  }
 }
