@@ -3,4 +3,3 @@ project(hello LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 add_executable(hello main.cpp)
-add_executable(quicktest test.cpp)
