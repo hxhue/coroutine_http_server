@@ -63,7 +63,7 @@ struct EpollScheduler {
   ~EpollScheduler() { check_syscall(close(epoll_)); }
 
   static EpollScheduler &get() {
-    static EpollScheduler instance;
+    static thread_local EpollScheduler instance;
     return instance;
   }
 

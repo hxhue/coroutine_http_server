@@ -1,5 +1,6 @@
 #pragma once
 
+#include "utility.hpp"
 #include <cassert>
 #include <chrono>
 #include <concepts>
@@ -10,6 +11,7 @@
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
+#include <unordered_set>
 #include <variant>
 
 template <class A>
@@ -124,6 +126,13 @@ struct Promise : detail::promise::PromiseReturnYield<Promise<T>, T> {
     }
   }
 
+  Promise() {
+    auto h = std::coroutine_handle<Promise<T>>::from_promise(*this);
+    DEBUG() << " Promise(): " << h.address() << "\n";
+  }
+
+  inline ~Promise();
+
   std::coroutine_handle<> prev_{};
   detail::promise::PromiseVariant<T> result_;
 };
@@ -138,7 +147,7 @@ struct [[nodiscard("maybe co_await this task?")]] Task {
   Task(Task const &) = delete;
   Task(Task &&) = default;
 
-  ~Task() { coro_.destroy(); }
+  inline ~Task();
 
   struct TaskAwaiter {
     bool await_ready() const noexcept { return false; }
@@ -232,16 +241,16 @@ struct TimedPromise : Promise<void> {
     // TimedPromise does not own the coroutine handle, so it does not destroy
     // it, but it can remove itself from the tree to avoid being resumed again.
     //
-    // std::cout << "~TimedPromise():\n";
-    // std::cout << "  tree: " << tree_ << "\n";
+    // DEBUG() << "~TimedPromise():\n";
+    // DEBUG() << "  tree: " << tree_ << "\n";
     if (tree_) {
       auto h = std::coroutine_handle<TimedPromise>::from_promise(*this);
       assert(tree_->contains(h));
       tree_->erase(h);
       tree_ = nullptr;
-      // std::cout << "  erased: " << h.address() << std::endl;
+      // DEBUG() << "  erased: " << h.address() << std::endl;
     } else {
-      // std::cerr << "~TimedPromise(): tree_ is null\n";
+      // DEBUG() << "~TimedPromise(): tree_ is null\n";
     }
   }
 
@@ -273,28 +282,12 @@ struct Scheduler {
   }
 
   template <typename P> auto run(std::coroutine_handle<P> entry_point) {
+    int loop_count = 0;
     while (!entry_point.done()) {
+      assert(++loop_count <= 1);
       entry_point.resume();
-      // Either finished or left some timers.
-      while (!timed_coros_.empty()) {
-        auto it = timed_coros_.begin();
-        auto &promise = it->promise();
-        auto now = Clock::now();
-        if (promise.expire_ <= now) {
-          auto coro = *it;
-          coro.resume();
-          // TimedPromise is special and is only created by sleep functions.
-          // Their coroutines do not contain co_yield, and we can assume that
-          // when coro.resume() returns, coro is destroyed. NOTE: when a
-          // coroutine handle is destroyed, method done() is unreliable anymore.
-          //
-          // When that happens, it will also remove itself from the tree, so
-          // don't erase the coroutine handle here.
-          //
-          // coroutines_.erase(it);
-        } else {
-          std::this_thread::sleep_until(it->promise().expire_);
-        }
+      while (auto delay = try_run()) {
+        std::this_thread::sleep_for(*delay);
       }
     }
     return entry_point.promise().result();
@@ -308,32 +301,69 @@ struct Scheduler {
   // Returns std::nullopt if there's no task to wait.
   std::optional<Clock::duration> try_run() {
     // There's no entry point, so the task must be put by other functions.
-    while (!timed_coros_.empty()) {
-      auto it = timed_coros_.begin();
-      auto &promise = it->promise();
-      // Get the result and don't let it change.
-      auto now = Clock::now();
-      if (promise.expire_ <= now) {
+    while (!ready_coros_.empty() || !timed_coros_.empty()) {
+      while (!ready_coros_.empty()) {
+        auto it = ready_coros_.begin();
         auto coro = *it;
+        ready_coros_.erase(it);
         coro.resume();
-      } else {
-        return promise.expire_ - now;
+      }
+      while (!timed_coros_.empty()) {
+        auto it = timed_coros_.begin();
+        auto &promise = it->promise();
+        // Get the result and don't let it change.
+        auto now = Clock::now();
+        if (promise.expire_ <= now) {
+          auto coro = *it;
+          coro.resume();
+          // TimedPromise is special and is only created by sleep functions.
+          // Their coroutines do not contain co_yield, and we can assume that
+          // when coro.resume() returns, coro is destroyed. NOTE: when a
+          // coroutine handle is destroyed, method done() is unreliable
+          // anymore.
+          //
+          // When that happens, it will also remove itself from the tree, so
+          // don't erase the coroutine handle here.
+          //
+          // coroutines_.erase(it);
+        } else {
+          return promise.expire_ - now;
+        }
       }
     }
     return std::nullopt;
   }
 
   static Scheduler &get() {
-    static Scheduler instance;
+    static thread_local Scheduler instance;
     return instance;
   }
 
   Scheduler() = default;
   Scheduler(Scheduler &&) = delete;
 
-  // std::deque<std::coroutine_handle<>> ready_coros_;
+  std::unordered_set<std::coroutine_handle<>> ready_coros_;
   std::set<std::coroutine_handle<TimedPromise>> timed_coros_;
 };
+
+template <typename T> Promise<T>::~Promise() {
+  // auto h = std::coroutine_handle<Promise<T>>::from_promise(*this);
+  // DEBUG() << "~Promise(): " << h.address() << "\n";
+  // auto &sched = Scheduler::get();
+  // if (sched.ready_coros_.contains(h)) {
+  //   sched.ready_coros_.erase(h);
+  // }
+}
+
+template <typename T, typename P> Task<T, P>::~Task() {
+  // TODO:
+  // DEBUG() << "destroying " << coro_.address() << "\n";
+  coro_.destroy();
+  // auto &sched = Scheduler::get();
+  // if (sched.ready_coros_.contains(coro_)) {
+  //   sched.ready_coros_.erase(coro_);
+  // }
+}
 
 struct SleepAwaiter {
   bool await_ready() const noexcept { return expire_ <= Clock::now(); }
@@ -387,6 +417,11 @@ struct WhenAllAwaiter {
     for (auto &task : tasks_.subspan(1)) {
       // TODO: resume is not stackless!
       task.coro_.resume();
+      // ERROR: If there's a task that's never resumed, its promise
+      // never gets created and never gets destructed! So withdrawing
+      // the task from the ready queue is impossible.
+      //
+      // Scheduler::get().ready_coros_.insert(task.coro_);
     }
     return tasks_[0].coro_;
   }
@@ -467,6 +502,7 @@ struct WhenAnyAwaiter {
     for (auto &task : tasks_.subspan(1)) {
       // TODO: resume is not stackless!
       task.coro_.resume();
+      // Scheduler::get().ready_coros_.insert(task.coro_);
     }
     return tasks_[0].coro_;
   }
