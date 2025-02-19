@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cerrno>
 #include <sys/epoll.h>
 #include <unistd.h>
 
@@ -24,17 +25,19 @@ struct EpollScheduler {
     struct epoll_event event;
     event.events = promise.events_;
     event.data.ptr = &promise;
-    check_syscall(epoll_ctl(epoll_, EPOLL_CTL_ADD, promise.fd_, &event));
+    DEBUG() << "add fd " << promise.fd_ << std::endl;
+    CHECK_SYSCALL(epoll_ctl(epoll_, EPOLL_CTL_ADD, promise.fd_, &event));
   }
 
   void remove_listener(EpollFilePromise &promise) {
-    check_syscall(epoll_ctl(epoll_, EPOLL_CTL_DEL, promise.fd_, NULL));
+    DEBUG() << "remove fd " << promise.fd_ << std::endl;
+    CHECK_SYSCALL(epoll_ctl(epoll_, EPOLL_CTL_DEL, promise.fd_, NULL));
   }
 
   // Call epoll_wait once and run callbacks(coroutines).
   void try_run(int timeout = -1) {
     struct epoll_event ebuf[10];
-    int res = check_syscall(epoll_wait(epoll_, ebuf, 10, timeout));
+    int res = CHECK_SYSCALL(epoll_wait(epoll_, ebuf, 10, timeout));
     for (int i = 0; i < res; i++) {
       auto &event = ebuf[i];
 
@@ -60,14 +63,14 @@ struct EpollScheduler {
 
   EpollScheduler &operator=(EpollScheduler &&) = delete;
 
-  ~EpollScheduler() { check_syscall(close(epoll_)); }
+  ~EpollScheduler() { CHECK_SYSCALL(close(epoll_)); }
 
   static EpollScheduler &get() {
     static thread_local EpollScheduler instance;
     return instance;
   }
 
-  int epoll_ = check_syscall(epoll_create1(STDIN_FILENO));
+  int epoll_ = CHECK_SYSCALL(epoll_create1(STDIN_FILENO));
 };
 
 EpollFilePromise::~EpollFilePromise() {

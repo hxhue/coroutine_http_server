@@ -1,15 +1,33 @@
 #pragma once
 
+#include <cassert>
 #include <cerrno>
+#include <cstring>
 #include <sstream>
-#include <system_error>
+#include <stdexcept>
+#include <string>
 
-inline auto check_syscall(int ret) {
+inline auto check_syscall(int ret, const char *file, int line, const char *pf,
+                          const char *expr) {
   if (ret == -1) {
-    throw std::system_error(errno, std::system_category());
+    int err = errno;
+    std::string s = "[" + std::to_string(err) + "] " + strerrorname_np(err);
+    s += "\n\nLocation: ";
+    s += file;
+    s += ":";
+    s += std::to_string(line);
+    s += "\nFunction: ";
+    s += pf;
+    s += "\nExpresion: ";
+    s += expr;
+    s += "\n";
+    throw std::runtime_error(s);
   }
   return ret;
 }
+
+#define CHECK_SYSCALL(expr)                                                    \
+  check_syscall((expr), __FILE__, __LINE__, __PRETTY_FUNCTION__, #expr)
 
 // https://stackoverflow.com/a/44989052/
 inline auto escape(std::string_view sv) {
@@ -47,3 +65,13 @@ inline auto escape(char ch) { return escape(std::string_view{&ch, 1}); }
 #define LOG(level) LOG_##level
 #define DEBUG() LOG(DEBUG)
 // clang-format on
+
+template <typename Func> class Defer {
+public:
+  Defer(Func func) : callback(std::move(func)) {}
+
+  ~Defer() { callback(); }
+
+private:
+  Func callback;
+};

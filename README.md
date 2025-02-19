@@ -24,6 +24,8 @@ Every basic `Promise` is a `PreviousPromise`, and every basic `Task` is a `Previ
 
 ## `when_all` vs. multiple consecutive `co_await`s
 
+https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1316r0.pdf
+
 In the following code, `task3` launches `task1` and `task2` before being suspended.
 
 ```cpp
@@ -68,3 +70,10 @@ However, if we change the `co_await when_all` expression to two separate `co_awa
 
 - [C++ Coroutines: Understanding Symmetric Transfer](https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer)
 - https://github.com/archibate/co_async
+
+# Google Test
+
+```bash
+git submodule add https://github.com/google/googletest.git extern/googletest
+git submodule update --init --recursive
+```

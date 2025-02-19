@@ -5,26 +5,21 @@
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <unistd.h>
+#include <variant>
 
 #include "epoll.hpp"
 #include "task.hpp"
+#include "utility.hpp"
 
+// TODO: improve performance by reading more than one byte.
 // May have partial read.
-inline Task<std::string> reader() {
+inline Task<std::string> reader(int fd) {
   using namespace std::chrono_literals;
-
+  DEBUG() << "before wait_file\n";
   // sleep_for belongs to Scheduler and it can never finish if there's only
-  // EpollScheduler. We need to manage 2 schedulers together.
-  // The waiter must be created outside.
-  //
-  // TODO: waiter should remove the file descriptor from epoll in its
-  // destructor.
-  auto waiter = wait_file(EpollScheduler::get(), 0, EPOLLIN);
-  auto result = co_await when_any(waiter, sleep_for(1s));
-  if (result.index() == 1) {
-    std::cout << "Returning because of timeout.\n";
-    co_return "";
-  }
+  // EpollScheduler.
+  co_await wait_file(EpollScheduler::get(), fd, EPOLLIN);
+  DEBUG() << "after  wait_file\n";
   std::string s;
   while (true) {
     char c;
@@ -41,12 +36,41 @@ inline Task<std::string> reader() {
 }
 
 int main() {
+  using namespace std::chrono_literals;
+  
   int read_fd = STDIN_FILENO;
-  check_syscall(fcntl(read_fd, F_SETFL, O_NONBLOCK));
+  int flags = CHECK_SYSCALL(fcntl(read_fd, F_GETFL, 0));
+  flags = flags | O_NONBLOCK;
+  CHECK_SYSCALL(fcntl(read_fd, F_SETFL, flags));
 
+  // Step 14: read from multiple fds.
   auto task = []() -> Task<void> {
+    DEBUG() << "task\n";
+    // Regular files do not support epoll. Open a new console and get its pty.
+    //
+    // $ readlink /proc/self/fd/0
+    // /dev/pts/14
+    //
+    int fd = CHECK_SYSCALL(open("/dev/pts/14", O_RDONLY | O_NONBLOCK));
+    auto defer = Defer([fd] { CHECK_SYSCALL(close(fd)); });
     while (true) {
-      auto s = co_await reader();
+      std::string s;
+      {
+        // Wait for one file with a timeout.
+        // auto var = co_await when_any(reader(STDIN_FILENO), sleep_for(1s));
+        // if (var.index() == 0) {
+        //   s = std::get<0>(std::move(var));
+        // }
+
+        // Wait for one file.
+        // s = co_await reader(STDIN_FILENO);
+        
+        // Wait for two files.
+        auto var = co_await when_any(reader(STDIN_FILENO), reader(fd));
+        std::visit([&s](auto &&v) { s = std::move(v); }, var);
+        
+        // NOTE: var is moved.
+      }
       std::cout << "Got \"" << escape(s) << "\"\n";
       if (s == "quit\n")
         break;
@@ -60,14 +84,16 @@ int main() {
     using namespace std::chrono;
     auto delay = sched.try_run();
     if (delay.has_value()) {
-      std::cout << "Next timer in " << delay.value() << "\n";
+      std::cout << "-- Next timer in " << delay.value() << "\n";
       auto ms = duration_cast<milliseconds>(delay.value()).count();
       if (ms <= 0)
         ms = 1;
       epoll_sched.try_run(ms);
     } else {
-      std::cout << "No timers\n";
+      // std::cout << "No timers\n";
       epoll_sched.try_run();
     }
   }
+  // NOTE: check the result to see if there's an error.
+  task.coro_.promise().result();
 }

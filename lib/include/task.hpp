@@ -128,7 +128,7 @@ struct Promise : detail::promise::PromiseReturnYield<Promise<T>, T> {
 
   Promise() {
     auto h = std::coroutine_handle<Promise<T>>::from_promise(*this);
-    DEBUG() << " Promise(): " << h.address() << "\n";
+    // DEBUG() << " Promise(): " << h.address() << "\n";
   }
 
   inline ~Promise();
