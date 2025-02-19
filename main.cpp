@@ -18,26 +18,28 @@ inline Task<std::string> reader(int fd) {
   DEBUG() << "before wait_file\n";
   // sleep_for belongs to Scheduler and it can never finish if there's only
   // EpollScheduler.
-  co_await wait_file(EpollScheduler::get(), fd, EPOLLIN);
+  co_await wait_file(EpollScheduler::get(), fd, EPOLLIN | EPOLLET);
   DEBUG() << "after  wait_file\n";
   std::string s;
   while (true) {
-    char c;
-    ssize_t len = read(0, &c, 1);
+    // char c;
+    char buf[1024];
+    ssize_t len = read(0, buf, sizeof(buf) - 1);
     if (len == -1) {
       if (errno != EWOULDBLOCK) {
         throw std::system_error(errno, std::system_category());
       }
       break;
     }
-    s.push_back(c);
+    buf[len] = '\0';
+    s += buf;
   }
   co_return s;
 }
 
 int main() {
   using namespace std::chrono_literals;
-  
+
   int read_fd = STDIN_FILENO;
   int flags = CHECK_SYSCALL(fcntl(read_fd, F_GETFL, 0));
   flags = flags | O_NONBLOCK;
@@ -64,14 +66,14 @@ int main() {
 
         // Wait for one file.
         // s = co_await reader(STDIN_FILENO);
-        
+
         // Wait for two files.
         auto var = co_await when_any(reader(STDIN_FILENO), reader(fd));
         std::visit([&s](auto &&v) { s = std::move(v); }, var);
-        
+
         // NOTE: var is moved.
       }
-      std::cout << "Got \"" << escape(s) << "\"\n";
+      std::cout << "Got " << escape(s) << "\n";
       if (s == "quit\n")
         break;
     }

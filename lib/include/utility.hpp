@@ -29,28 +29,46 @@ inline auto check_syscall(int ret, const char *file, int line, const char *pf,
 #define CHECK_SYSCALL(expr)                                                    \
   check_syscall((expr), __FILE__, __LINE__, __PRETTY_FUNCTION__, #expr)
 
-// https://stackoverflow.com/a/44989052/
-inline auto escape(std::string_view sv) {
-  // s is our escaped output string
-  std::string s;
-  // loop through all characters
-  for (char c : sv) {
-    // check if a given character is printable
-    // the cast is necessary to avoid undefined behaviour
-    if (isprint((unsigned char)c))
-      s += c;
-    else {
-      std::stringstream stream;
-      // if the character is not printable
-      // we'll convert it to a hex string using a stringstream
-      // note that since char is signed we have to cast it to unsigned first
-      stream << std::hex << (unsigned int)(unsigned char)(c);
-      std::string code = stream.str();
-      s += std::string("\\x") + (code.size() < 2 ? "0" : "") + code;
-      // alternatively for URL encodings:
-      // s += std::string("%")+(code.size()<2?"0":"")+code;
+template <class OutIter>
+OutIter write_escaped(std::string_view s, OutIter out) {
+  *out++ = '"';
+  for (auto i = s.begin(), end = s.end(); i != end; ++i) {
+    unsigned char c = *i;
+    if (' ' <= c and c <= '~' and c != '\\' and c != '"') {
+      *out++ = c;
+    } else {
+      *out++ = '\\';
+      switch (c) {
+      case '"':
+        *out++ = '"';
+        break;
+      case '\\':
+        *out++ = '\\';
+        break;
+      case '\t':
+        *out++ = 't';
+        break;
+      case '\r':
+        *out++ = 'r';
+        break;
+      case '\n':
+        *out++ = 'n';
+        break;
+      default:
+        char const *const hexdig = "0123456789ABCDEF";
+        *out++ = 'x';
+        *out++ = hexdig[c >> 4];
+        *out++ = hexdig[c & 0xF];
+      }
     }
   }
+  *out++ = '"';
+  return out;
+}
+
+inline std::string escape(std::string_view sv) {
+  std::string s;
+  write_escaped(sv, std::back_inserter(s));
   return s;
 }
 
