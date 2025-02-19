@@ -3,9 +3,12 @@
 #include <cassert>
 #include <cerrno>
 #include <cstring>
-#include <sstream>
 #include <stdexcept>
 #include <string>
+
+#include "type_name.hpp"
+
+using type_nam::type_name;
 
 inline auto check_syscall(int ret, const char *file, int line, const char *pf,
                           const char *expr) {
@@ -26,8 +29,25 @@ inline auto check_syscall(int ret, const char *file, int line, const char *pf,
   return ret;
 }
 
+template <std::integral... Ts>
+inline auto check_syscall_allow(int ret, const char *file, int line,
+                                const char *pf, const char *expr, Ts... args) {
+  if (ret == -1) {
+    int err = errno;
+    if (((err == args) || ...)) {
+      return 0;
+    }
+    check_syscall(-1, file, line, pf, expr);
+  }
+  return ret;
+}
+
 #define CHECK_SYSCALL(expr)                                                    \
   check_syscall((expr), __FILE__, __LINE__, __PRETTY_FUNCTION__, #expr)
+
+#define CHECK_SYSCALL_ALLOW(expr, ...)                                         \
+  check_syscall_allow((expr), __FILE__, __LINE__, __PRETTY_FUNCTION__, #expr,  \
+                      __VA_ARGS__)
 
 template <class OutIter>
 OutIter write_escaped(std::string_view s, OutIter out) {

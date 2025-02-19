@@ -11,28 +11,35 @@
 #include "task.hpp"
 #include "utility.hpp"
 
-// TODO: improve performance by reading more than one byte.
-// May have partial read.
-inline Task<std::string> reader(int fd) {
-  using namespace std::chrono_literals;
-  DEBUG() << "before wait_file\n";
-  // sleep_for belongs to Scheduler and it can never finish if there's only
-  // EpollScheduler.
-  co_await wait_file(EpollScheduler::get(), fd, EPOLLIN | EPOLLET);
-  DEBUG() << "after  wait_file\n";
+inline std::size_t read_file_sync(AsyncFile &file, std::span<char> buffer) {
+  return CHECK_SYSCALL_ALLOW(read(file.fd_, buffer.data(), buffer.size()),
+                             EAGAIN);
+}
+
+inline Task<std::size_t> read_file(EpollScheduler &sched, AsyncFile &file,
+                                   std::span<char> buffer) {
+  co_await wait_file(sched, file, EPOLLIN | EPOLLRDHUP);
+  auto len = read_file_sync(file, buffer);
+  co_return len;
+}
+
+inline Task<std::string> read_string(AsyncFile &file) {
+  auto &sched = EpollScheduler::get();
+  co_await wait_file(sched, file, EPOLLIN | EPOLLET);
   std::string s;
+  size_t chunk = 64;
   while (true) {
-    // char c;
-    char buf[1024];
-    ssize_t len = read(0, buf, sizeof(buf) - 1);
-    if (len == -1) {
-      if (errno != EWOULDBLOCK) {
-        throw std::system_error(errno, std::system_category());
-      }
+    char c;
+    std::size_t exist = s.size();
+    s.resize(exist + chunk);
+    std::span<char> buffer(s.data() + exist, chunk);
+    auto len = co_await read_file(sched, file, buffer);
+    if (len != chunk) {
+      s.resize(exist + len);
       break;
     }
-    buf[len] = '\0';
-    s += buf;
+    if (chunk < 65536)
+      chunk *= 4;
   }
   co_return s;
 }
@@ -41,34 +48,30 @@ int main() {
   using namespace std::chrono_literals;
 
   int read_fd = STDIN_FILENO;
-  int flags = CHECK_SYSCALL(fcntl(read_fd, F_GETFL, 0));
-  flags = flags | O_NONBLOCK;
-  CHECK_SYSCALL(fcntl(read_fd, F_SETFL, flags));
+  AsyncFile read_f{read_fd};
+  read_f.set_nonblock();
 
   // Step 14: read from multiple fds.
-  auto task = []() -> Task<void> {
+  auto task = [](AsyncFile &read_f) -> Task<void> {
     DEBUG() << "task\n";
-    // Regular files do not support epoll. Open a new console and get its pty.
-    //
-    // $ readlink /proc/self/fd/0
-    // /dev/pts/14
-    //
+    // int fd = CHECK_SYSCALL(open("/dev/stdin", O_RDONLY | O_NONBLOCK));
     int fd = CHECK_SYSCALL(open("/dev/pts/14", O_RDONLY | O_NONBLOCK));
-    auto defer = Defer([fd] { CHECK_SYSCALL(close(fd)); });
+    AsyncFile file{fd};
+
     while (true) {
       std::string s;
       {
         // Wait for one file with a timeout.
-        // auto var = co_await when_any(reader(STDIN_FILENO), sleep_for(1s));
-        // if (var.index() == 0) {
+        // auto var = co_await when_any(read_string(STDIN_FILENO),
+        // sleep_for(1s)); if (var.index() == 0) {
         //   s = std::get<0>(std::move(var));
         // }
 
         // Wait for one file.
-        // s = co_await reader(STDIN_FILENO);
+        // s = co_await read_string(read_f);
 
         // Wait for two files.
-        auto var = co_await when_any(reader(STDIN_FILENO), reader(fd));
+        auto var = co_await when_any(read_string(read_f), read_string(file));
         std::visit([&s](auto &&v) { s = std::move(v); }, var);
 
         // NOTE: var is moved.
@@ -77,7 +80,7 @@ int main() {
       if (s == "quit\n")
         break;
     }
-  }();
+  }(read_f);
 
   auto &epoll_sched = EpollScheduler::get();
   auto &sched = Scheduler::get();

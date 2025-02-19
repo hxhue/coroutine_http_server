@@ -1,6 +1,5 @@
 #pragma once
 
-#include "utility.hpp"
 #include <cassert>
 #include <chrono>
 #include <concepts>
@@ -8,11 +7,14 @@
 #include <exception>
 #include <iostream>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
 #include <unordered_set>
 #include <variant>
+
+#include "utility.hpp"
 
 template <class A>
 concept Awaiter = requires(A a, std::coroutine_handle<> h) {
@@ -122,7 +124,12 @@ struct Promise : detail::promise::PromiseReturnYield<Promise<T>, T> {
         // result_ = std::monostate{}; // maybe do not reset the result?
         return ret;
       }
-      throw std::runtime_error("The value is not set");
+      auto h = std::coroutine_handle<Promise>::from_promise(*this);
+      // DEBUG() << "-- Problematic handle: " << h.address() << std::endl;
+      std::stringstream ss;
+      ss << "The value is not set: " << type_name<T>();
+      auto s = ss.str();
+      throw std::runtime_error(s);
     }
   }
 
@@ -356,7 +363,9 @@ template <typename T> Promise<T>::~Promise() {
 }
 
 template <typename T, typename P> Task<T, P>::~Task() {
-  // TODO:
+  if (!coro_.done()) {
+    // DEBUG() << "Task canceled: " << coro_.address() << "\n";
+  }
   // DEBUG() << "destroying " << coro_.address() << "\n";
   coro_.destroy();
   // auto &sched = Scheduler::get();

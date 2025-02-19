@@ -1,11 +1,44 @@
 #pragma once
 
 #include <cerrno>
+#include <coroutine>
+#include <fcntl.h>
 #include <sys/epoll.h>
 #include <unistd.h>
+#include <utility>
 
 #include "task.hpp"
 #include "utility.hpp"
+
+struct AsyncFile {
+  AsyncFile() : fd_(-1) {}
+
+  explicit AsyncFile(int fd) noexcept : fd_(fd) {}
+
+  AsyncFile(AsyncFile &&other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
+
+  AsyncFile &operator=(AsyncFile &&other) noexcept {
+    std::swap(fd_, other.fd_);
+    return *this;
+  }
+
+  ~AsyncFile() {
+    if (fd_ != -1) {
+      close(fd_);
+    }
+  }
+
+  int release() noexcept { return std::exchange(fd_, -1); }
+
+  void set_nonblock() {
+    int read_fd = fd_;
+    int flags = CHECK_SYSCALL(fcntl(read_fd, F_GETFL, 0));
+    flags = flags | O_NONBLOCK;
+    CHECK_SYSCALL(fcntl(read_fd, F_SETFL, flags));
+  }
+
+  int fd_;
+};
 
 struct EpollFilePromise : Promise<void> {
   auto get_return_object() {
@@ -20,17 +53,24 @@ struct EpollFilePromise : Promise<void> {
   uint32_t events_;
 };
 
+// If the fds point to the same file, there will be an exception.
+// Don't add the same file multiple times!
 struct EpollScheduler {
   void add_listener(EpollFilePromise &promise) {
     struct epoll_event event;
     event.events = promise.events_;
     event.data.ptr = &promise;
-    DEBUG() << "add fd " << promise.fd_ << std::endl;
+
+    // auto h = std::coroutine_handle<EpollFilePromise>::from_promise(promise);
+    // DEBUG() << "add fd " << promise.fd_ << " " << h.address() << std::endl;
+
     CHECK_SYSCALL(epoll_ctl(epoll_, EPOLL_CTL_ADD, promise.fd_, &event));
   }
 
   void remove_listener(EpollFilePromise &promise) {
-    DEBUG() << "remove fd " << promise.fd_ << std::endl;
+    // auto h = std::coroutine_handle<EpollFilePromise>::from_promise(promise);
+    // DEBUG() << "rm fd " << promise.fd_ << " " << h.address() << std::endl;
+
     CHECK_SYSCALL(epoll_ctl(epoll_, EPOLL_CTL_DEL, promise.fd_, NULL));
   }
 
@@ -50,7 +90,8 @@ struct EpollScheduler {
       // What's the difference between it and a normal function?
       // The coroutine can return early without finishing, the semantic is being
       // launched instead of having finished.
-      std::coroutine_handle<EpollFilePromise>::from_promise(promise).resume();
+      auto h = std::coroutine_handle<EpollFilePromise>::from_promise(promise);
+      h.resume();
     }
   }
 
@@ -94,7 +135,11 @@ struct EpollFileAwaiter {
   uint32_t events_;
 };
 
-inline Task<void, EpollFilePromise> wait_file(EpollScheduler &sched, int fd,
-                                              uint32_t events) {
-  co_await EpollFileAwaiter(sched, fd, events);
+inline Task<void, EpollFilePromise>
+wait_file(EpollScheduler &sched, AsyncFile &file, uint32_t events) {
+  // DEBUG() << "before co_await EpollFileAwaiter\n";
+  int fd = file.fd_;
+  auto awaiter = EpollFileAwaiter(sched, fd, events);
+  co_await awaiter;
+  // DEBUG() << "after  co_await EpollFileAwaiter\n";
 }
