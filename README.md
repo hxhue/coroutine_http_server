@@ -1,6 +1,6 @@
 # Coroutine HTTP Server
 
-- Stackless coroutines with symmetric transfer
+- ~~Stackless coroutines with symmetric transfer~~
 - `sleep_for` and `sleep_until`
     - They play nice with coroutines.
 - `when_all` and `when_any`
@@ -8,7 +8,18 @@
     - When the last task of the `when_all` group finishes, it awakes the previous suspended task (which is waiting for `when_all` coroutine to finish).
     - When the first task finishes, `when_any` destroys the other tasks by returning from the coroutine body and letting the temporary tasks' destructors destroy the coroutine handles and remove them from the scheduler.
 - `EpollScheduler`
-  - Instead of registering function pointers to `epoll_event`, register a pointer to `EpollFilePromise`. When When epoll gives us an event, we get a coroutine handle to resume. Compared to a normal function pointer, the coroutine can return without finishing, the semantic is being launched rather than having finished.
+  - Instead of registering function pointers to `epoll_event`, register a `EpollFilePromise*`. When epoll notifies an event, we get a coroutine handle to resume. Compared to a normal function pointer, the coroutine can return without finishing, the semantic is being launched rather than running to completion.
+
+# Build
+
+First, download googletest:
+
+```bash
+git submodule add https://github.com/google/googletest.git extern/googletest
+git submodule update --init --recursive
+```
+
+# Design
 
 ## `PreviousTask` (`Task`)
 
@@ -23,8 +34,6 @@ Every basic `Promise` is a `PreviousPromise`, and every basic `Task` is a `Previ
 2. `co_await final_suspend(h)` returns the new handle if it's not nullptr.
 
 ## `when_all` vs. multiple consecutive `co_await`s
-
-https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1316r0.pdf
 
 In the following code, `task3` launches `task1` and `task2` before being suspended.
 
@@ -65,15 +74,9 @@ However, if we change the `co_await when_all` expression to two separate `co_awa
 +    auto result1 = co_await task1;
 +    auto result2 = co_await task2;
 ```
+For more details, please refer to https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1316r0.pdf.
 
 # Resources
 
 - [C++ Coroutines: Understanding Symmetric Transfer](https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer)
 - https://github.com/archibate/co_async
-
-# Google Test
-
-```bash
-git submodule add https://github.com/google/googletest.git extern/googletest
-git submodule update --init --recursive
-```
