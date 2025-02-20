@@ -1,9 +1,6 @@
-set(EXECUTABLES when_all when_any)
+set(EXECUTABLES epoll_multiple_files)
 
 foreach(exe IN LISTS EXECUTABLES)
   add_executable(${exe} ${exe}.cpp)
   target_link_libraries(${exe} gtest)
-  gtest_discover_tests(${exe})
 endforeach()
-
-add_subdirectory(compile_only)

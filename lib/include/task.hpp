@@ -5,7 +5,6 @@
 #include <concepts>
 #include <coroutine>
 #include <exception>
-#include <iostream>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -172,7 +171,11 @@ struct [[nodiscard("maybe co_await this task?")]] Task {
       return coro_;
     }
 
-    T await_resume() const { return coro_.promise().result(); }
+    T await_resume() const {
+      if constexpr (!std::is_same_v<void, T>) {
+        return coro_.promise().result();
+      }
+    }
 
     TaskAwaiter(std::coroutine_handle<promise_type> coro)
         : coro_(std::move(coro)) {}
@@ -283,7 +286,7 @@ inline bool operator<(const std::coroutine_handle<TimedPromise> &lhs,
   return lhs.address() < rhs.address();
 }
 
-struct Scheduler {
+struct TimedScheduler {
   void add_task(std::coroutine_handle<TimedPromise> h) {
     timed_coros_.insert(h);
   }
@@ -293,7 +296,7 @@ struct Scheduler {
     while (!entry_point.done()) {
       assert(++loop_count <= 1);
       entry_point.resume();
-      while (auto delay = try_run()) {
+      while (auto delay = run()) {
         std::this_thread::sleep_for(*delay);
       }
     }
@@ -306,7 +309,7 @@ struct Scheduler {
 
   // Returns the time we still have to wait for the next task to be ready.
   // Returns std::nullopt if there's no task to wait.
-  std::optional<Clock::duration> try_run() {
+  std::optional<Clock::duration> run() {
     // There's no entry point, so the task must be put by other functions.
     while (!ready_coros_.empty() || !timed_coros_.empty()) {
       while (!ready_coros_.empty()) {
@@ -341,13 +344,13 @@ struct Scheduler {
     return std::nullopt;
   }
 
-  static Scheduler &get() {
-    static thread_local Scheduler instance;
-    return instance;
-  }
+  // static TimedScheduler &get() {
+  //   static TimedScheduler instance;
+  //   return instance;
+  // }
 
-  Scheduler() = default;
-  Scheduler(Scheduler &&) = delete;
+  TimedScheduler() = default;
+  TimedScheduler(TimedScheduler &&) = delete;
 
   std::unordered_set<std::coroutine_handle<>> ready_coros_;
   std::set<std::coroutine_handle<TimedPromise>> timed_coros_;
@@ -364,7 +367,7 @@ template <typename T> Promise<T>::~Promise() {
 
 template <typename T, typename P> Task<T, P>::~Task() {
   if (!coro_.done()) {
-    // DEBUG() << "Task canceled: " << coro_.address() << "\n";
+    DEBUG() << "Task canceled: " << coro_.address() << "\n";
   }
   // DEBUG() << "destroying " << coro_.address() << "\n";
   coro_.destroy();
@@ -399,15 +402,16 @@ struct SleepAwaiter {
   auto await_resume() const {}
 
   Clock::time_point expire_{Clock::now()};
-  Scheduler &scheduler_;
+  TimedScheduler &scheduler_;
 };
 
-inline Task<void, TimedPromise> sleep_until(Clock::time_point expire) {
-  co_return co_await SleepAwaiter{expire, Scheduler::get()};
+inline Task<void, TimedPromise> sleep_until(TimedScheduler &sched,
+                                            Clock::time_point expire) {
+  co_return co_await SleepAwaiter{expire, sched};
 }
 
-inline auto sleep_for(Clock::duration duration) {
-  return sleep_until(Clock::now() + duration);
+inline auto sleep_for(TimedScheduler &sched, Clock::duration duration) {
+  return sleep_until(sched, Clock::now() + duration);
 }
 
 namespace detail::when_all {
@@ -568,4 +572,17 @@ Task<Variant> when_any(As &&...as) {
 
   co_await WhenAnyAwaiter{.tasks_ = tasks, .group_ = group};
   co_return result;
+}
+
+template <class Loop, class T, class P>
+T run_task(Loop &loop, Task<T, P> const &t) {
+  auto a = t.operator co_await();
+  a.await_suspend(std::noop_coroutine()).resume();
+  loop.run();
+  return a.await_resume();
+}
+
+template <class T, class P> void spawn_task(Task<T, P> const &t) {
+  auto a = t.operator co_await();
+  a.await_suspend(std::noop_coroutine()).resume();
 }

@@ -5,6 +5,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <iostream> // for LOG_DEBUG
 
 #include "type_name.hpp"
 
@@ -29,26 +30,16 @@ inline auto check_syscall(int ret, const char *file, int line, const char *pf,
   return ret;
 }
 
-template <std::integral... Ts>
-inline auto check_syscall_allow(int ret, const char *file, int line,
-                                const char *pf, const char *expr, Ts... args) {
-  if (ret == -1) {
-    int err = errno;
-    if (((err == args) || ...)) {
-      return 0;
-    }
-    check_syscall(-1, file, line, pf, expr);
-  }
-  return ret;
-}
-
 #define CHECK_SYSCALL(expr)                                                    \
   check_syscall((expr), __FILE__, __LINE__, __PRETTY_FUNCTION__, #expr)
 
-#define CHECK_SYSCALL_ALLOW(expr, ...)                                         \
-  check_syscall_allow((expr), __FILE__, __LINE__, __PRETTY_FUNCTION__, #expr,  \
-                      __VA_ARGS__)
+#define CHECK_SYSCALL2(expr)                                                   \
+  check_syscall((expr), __FILE__, __LINE__, "", #expr)
 
+#define THROW_SYSCALL(str)                                                     \
+  check_syscall(-1, __FILE__, __LINE__, __PRETTY_FUNCTION__, str)
+
+// https://stackoverflow.com/a/2417875/
 template <class OutIter>
 OutIter write_escaped(std::string_view s, OutIter out) {
   *out++ = '"';
