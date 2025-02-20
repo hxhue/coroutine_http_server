@@ -1,25 +1,32 @@
 # Coroutine HTTP Server
 
-- ~~Stackless coroutines with symmetric transfer~~
-- `sleep_for` and `sleep_until`
-    - They play nice with coroutines.
+<!-- - ~~Stackless coroutines with symmetric transfer~~ -->
+
+# Design
+
+Steps:
+
+1. Create an entrypoint task.
+2. This task may spawn other tasks, leaving them in different schedulers.
+3. A task is either running, staying in schedulers to be resumed, or cancelled.
+4. Schedulers collaborate and the entrypoint task finally finishes.
+
+Schedulers:
+
+- `TimedScheduler`
+  - Stores coroutines waiting for time.
+  - e.g. `sleep_for` and `sleep_until`。
+- `EpollScheduler`.
+  - Stores coroutines waiting for files to become ready.
+  - e.g. `AsyncFile`, `wait_file_event`, etc.
+  - NOTE: Instead of registering function pointers to `epoll_event`, every waiter registers a `EpollFilePromise*`. When epoll signals an event, it provides us with a coroutine handle to resume. Unlike a standard function pointer, when a coroutine returns from the `resume()` call, it does not necessarily reach its conclusion. It can be launched, but not finished.
+
+🚧 *Where to put this?*
+
 - `when_all` and `when_any`
     - They both assume the tasks passed as arguments are not in the scheduler.
     - When the last task of the `when_all` group finishes, it awakes the previous suspended task (which is waiting for `when_all` coroutine to finish).
     - When the first task finishes, `when_any` destroys the other tasks by returning from the coroutine body and letting the temporary tasks' destructors destroy the coroutine handles and remove them from the scheduler.
-- `EpollScheduler`
-  - Instead of registering function pointers to `epoll_event`, register a `EpollFilePromise*`. When epoll notifies an event, we get a coroutine handle to resume. Compared to a normal function pointer, the coroutine can return without finishing, the semantic is being launched rather than running to completion.
-
-# Build
-
-First, download googletest:
-
-```bash
-git submodule add https://github.com/google/googletest.git extern/googletest
-git submodule update --init --recursive
-```
-
-# Design
 
 ## `PreviousTask` (`Task`)
 
@@ -31,7 +38,7 @@ Every basic `Promise` is a `PreviousPromise`, and every basic `Task` is a `Previ
 ## `ReturnPreviousTask`
 
 1. `return_value` (triggered by `co_return`) saves a new coroutine handle.
-2. `co_await final_suspend(h)` returns the new handle if it's not nullptr.
+2. `co_await final_suspend(h)` returns the new handle if it's not null.
 
 ## `when_all` vs. multiple consecutive `co_await`s
 
@@ -67,14 +74,30 @@ int main() {
 }
 ```
 
-However, if we change the `co_await when_all` expression to two separate `co_await` statements, only the first task gets created when the current coroutine is suspended.
+However, if we change the `co_await when_all` expression to two separate `co_await` statements, only the first task gets created when the current coroutine is suspended. You end up waiting for 3 seconds!
 
 ```diff
 -    auto [result1, result2] = co_await when_all(task1, task2);
 +    auto result1 = co_await task1;
 +    auto result2 = co_await task2;
 ```
-For more details, please refer to https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1316r0.pdf.
+For a more in-depth explanation, please refer to this link: https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1316r0.pdf.
+
+# Build
+
+First, download googletest:
+
+```bash
+git submodule add https://github.com/google/googletest.git extern/googletest
+git submodule update --init --recursive
+```
+
+Then run cmake commands to build the project.
+
+Development setup:
+
+- Compiler: GCC 13.3.0
+- System: Ubuntu 24.04.1 LTS (WSL2)
 
 # Resources
 
