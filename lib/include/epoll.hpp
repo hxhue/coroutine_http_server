@@ -147,7 +147,7 @@ EpollFilePromise::~EpollFilePromise() {
 }
 
 void EpollFilePromise::set_resume_events(EpollEventMask mask) {
-  awaiter_->events_ = mask;
+  awaiter_->resume_events_ = mask;
 }
 
 bool EpollScheduler::add_listener(EpollFilePromise &promise, int epoll_op) {
