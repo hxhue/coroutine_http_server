@@ -49,3 +49,5 @@ template <typename T> constexpr auto type_name() -> ::std::string_view {
   return ::std::string_view{value.data(), value.size()};
 }
 } // namespace type_nam
+
+using type_nam::type_name;

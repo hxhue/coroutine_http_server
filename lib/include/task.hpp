@@ -14,6 +14,7 @@
 #include <variant>
 
 #include "utility.hpp"
+#include "type_name.hpp"
 
 template <class A>
 concept Awaiter = requires(A a, std::coroutine_handle<> h) {
@@ -28,7 +29,7 @@ concept Awaitable = Awaiter<A> || requires(A a) {
 };
 
 namespace detail {
-struct Empty {};
+struct Void {};
 
 } // namespace detail
 
@@ -37,7 +38,7 @@ template <class A> struct AwaitableTraits;
 template <Awaiter A> struct AwaitableTraits<A> {
   using RetType = decltype(std::declval<A>().await_resume());
   using NonVoidRetType =
-      std::conditional_t<std::is_same_v<void, RetType>, detail::Empty, RetType>;
+      std::conditional_t<std::is_same_v<void, RetType>, detail::Void, RetType>;
 };
 
 template <class A>
@@ -367,7 +368,7 @@ template <typename T> Promise<T>::~Promise() {
 
 template <typename T, typename P> Task<T, P>::~Task() {
   if (!coro_.done()) {
-    DEBUG() << "Task canceled: " << coro_.address() << "\n";
+    // DEBUG() << "Task canceled: " << coro_.address() << "\n";
   }
   // DEBUG() << "destroying " << coro_.address() << "\n";
   coro_.destroy();

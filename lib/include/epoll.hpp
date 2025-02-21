@@ -4,6 +4,7 @@
 #include <chrono>
 #include <coroutine>
 #include <fcntl.h>
+#include <iostream>
 #include <sys/epoll.h>
 #include <unistd.h>
 #include <utility>
@@ -56,6 +57,8 @@ struct EpollFilePromise : Promise<EpollEventMask> {
 
   inline ~EpollFilePromise();
 
+  inline void set_resume_events(EpollEventMask ev);
+
   EpollFileAwaiter *awaiter_;
 };
 
@@ -73,20 +76,19 @@ struct EpollScheduler {
       using namespace std::chrono;
       timeout = duration_cast<milliseconds>(*timeout_opt).count();
     }
-    struct epoll_event ebuf[10];
-    int res = CHECK_SYSCALL(epoll_wait(epoll_, ebuf, 10, timeout));
+    struct epoll_event ebuf[16];
+    int res = CHECK_SYSCALL(epoll_wait(epoll_, ebuf, std::size(ebuf), timeout));
     for (int i = 0; i < res; i++) {
       auto &event = ebuf[i];
 
       // The pointer comes from add_listener.
       auto &promise = *(EpollFilePromise *)event.data.ptr;
 
+      // Let the promise know which events occur.
+      promise.set_resume_events(event.events);
+
       // When epoll gives us an event, we get a coroutine handle from data.ptr
       // and resume it.
-      //
-      // What's the difference between it and a normal function?
-      // The coroutine can return early without finishing, the semantic is being
-      // launched instead of having finished.
       auto h = std::coroutine_handle<EpollFilePromise>::from_promise(promise);
       h.resume();
     }
@@ -127,7 +129,9 @@ struct EpollFileAwaiter {
     return suspend;
   }
 
-  auto await_resume() const noexcept { return resume_events_; }
+  auto await_resume() noexcept {
+    return std::exchange<EpollEventMask>(resume_events_, 0);
+  }
 
   EpollScheduler &sched_;
   int fd_{-1};
@@ -140,6 +144,10 @@ EpollFilePromise::~EpollFilePromise() {
   if (awaiter_) {
     awaiter_->sched_.remove_listener(*this);
   }
+}
+
+void EpollFilePromise::set_resume_events(EpollEventMask mask) {
+  awaiter_->events_ = mask;
 }
 
 bool EpollScheduler::add_listener(EpollFilePromise &promise, int epoll_op) {
@@ -190,37 +198,52 @@ inline std::size_t write_file_sync(AsyncFile &file,
   return ret;
 }
 
-inline Task<std::size_t> read_file(EpollScheduler &sched, AsyncFile &file,
-                                   std::span<char> buffer) {
-  co_await wait_file_event(sched, file, EPOLLIN | EPOLLRDHUP);
+template <typename T> struct IOResult {
+  T result{};
+  bool hup{}; // This means cannot write/read anymore.
+};
+
+inline Task<IOResult<std::size_t>>
+read_file(EpollScheduler &sched, AsyncFile &file, std::span<char> buffer) {
+  auto ev = co_await wait_file_event(sched, file, EPOLLIN | EPOLLRDHUP);
   auto len = read_file_sync(file, buffer);
-  co_return len;
+  bool hup = ev & EPOLLRDHUP;
+  // if (ev & ~EPOLLIN) {
+  //   DEBUG() << "what is this?\n";
+  // }
+  co_return {len, hup};
 }
 
-inline Task<std::size_t> write_file(EpollScheduler &sched, AsyncFile &file,
-                                    std::span<char const> buffer) {
+inline Task<IOResult<std::size_t>> write_file(EpollScheduler &sched,
+                                              AsyncFile &file,
+                                              std::span<char const> buffer) {
   // DEBUG() << "waiting for file to be ready\n";
-  co_await wait_file_event(sched, file, EPOLLOUT | EPOLLHUP);
+  auto ev = co_await wait_file_event(sched, file, EPOLLOUT | EPOLLHUP);
   // DEBUG() << "file is ready\n";
   auto len = write_file_sync(file, buffer);
-  co_return len;
+  bool hup = ev & EPOLLHUP;
+  co_return {len, hup};
 }
-inline Task<std::string> read_string(EpollScheduler &sched, AsyncFile &file) {
-  co_await wait_file_event(sched, file, EPOLLIN | EPOLLET);
+
+inline Task<IOResult<std::string>> read_string(EpollScheduler &sched,
+                                               AsyncFile &file) {
+  co_await wait_file_event(sched, file, EPOLLIN);
   std::string s;
   size_t chunk = 64;
+  bool hup = false;
   while (true) {
     char c;
     std::size_t exist = s.size();
     s.resize(exist + chunk);
     std::span<char> buffer(s.data() + exist, chunk);
-    auto len = co_await read_file(sched, file, buffer);
-    if (len != chunk) {
+    auto [len, rdhup] = co_await read_file(sched, file, buffer);
+    if (len != chunk || rdhup) {
       s.resize(exist + len);
+      hup = rdhup;
       break;
     }
     if (chunk < 65536)
       chunk *= 4;
   }
-  co_return s;
+  co_return {std::move(s), hup};
 }

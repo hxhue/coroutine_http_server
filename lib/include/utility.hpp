@@ -7,10 +7,6 @@
 #include <string>
 #include <iostream> // for LOG_DEBUG
 
-#include "type_name.hpp"
-
-using type_nam::type_name;
-
 inline auto check_syscall(int ret, const char *file, int line, const char *pf,
                           const char *expr) {
   if (ret == -1) {
