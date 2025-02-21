@@ -2,7 +2,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <iostream>
-
+#include <ranges>
 #include <sys/epoll.h>
 #include <termios.h>
 #include <unistd.h>
@@ -175,33 +175,39 @@ AsyncLoop loop;
 Task<> amain() {
   using namespace std::chrono_literals;
 
-  // auto sock_addr = socket_address(ip_address("baidu.com"), 80);
-
-  // https://tcpbin.com/
-  auto sock_addr = socket_address(ip_address("tcpbin.com"), 4242);
-
+  auto sock_addr = socket_address(ip_address("baidu.com"), 80);
   auto sock = co_await create_tcp_client(loop, sock_addr);
 
   // co_await write_file(loop, sock, "GET / HTTP/1.1\r\n\r\n");
 
-  for (int i = 0; i < 5; ++i) {
-    // Don't have to sleep. The server sends messages slow because of long
-    // distance.
-    //
-    // if (i > 0) {
-    //   co_await sleep_for(loop, 300ms);
-    // }
-
-    // The echo program expected an newline.
-    co_await write_file(loop, sock, std::to_string(i) + "\n");
-    // DEBUG() << "after write_file()\n";
+  int loop_count = 1;
+  assert(loop_count > 0);
+  for (int i : std::views::iota(0, loop_count)) {
+    co_await write_file(loop, sock,
+                        "GET / HTTP/1.1\r\n"
+                        "Host: baidu.com\r\n"
+                        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/91.0.4472.124 Safari/537.36\r\n"
+                        "Accept: "
+                        "text/html,application/xhtml+xml,application/"
+                        "xml;q=0.9,image/avif,image/webp,image/apng,*/"
+                        "*;q=0.8,application/signed-exchange;v=b3;q=0.9\r\n"
+                        "Accept-Language: en-US,en;q=0.9\r\n"
+                        "Connection: close\r\n"
+                        "\r\n");
 
     char buf[4096];
+    // NOTE: this reads only once and may not read all data.
+    // e.g. The response body can be lost.
     auto len = co_await read_file(loop, sock, buf);
     // DEBUG() << "after read_file()\n";
 
     std::string_view res(buf, len);
-    std::cout << escape(res) << std::endl;
+    // std::cout << escape(res) << std::endl;
+    std::cout << res << std::endl;
+
+    std::cout << "====================\nDone!\n";
   }
 }
 
