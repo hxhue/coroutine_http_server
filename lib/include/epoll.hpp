@@ -174,26 +174,32 @@ inline std::size_t write_file_sync(AsyncFile &file,
 }
 
 inline Task<IOResult<std::size_t>>
-read_file(EpollScheduler &sched, AsyncFile &file, std::span<char> buffer) {
-  auto ev = co_await wait_file_event(sched, file, EPOLLIN | EPOLLRDHUP);
+read_file_best_effort(EpollScheduler &sched, AsyncFile &file,
+                      std::span<char> buffer) {
+  auto ev =
+      co_await wait_file_event(sched, file, EPOLLIN | EPOLLRDHUP | EPOLLHUP);
+  bool hup = ev & (EPOLLRDHUP | EPOLLHUP);
+  if (hup) {
+    co_return {0, hup};
+  }
   auto len = read_file_sync(file, buffer);
-  bool hup = ev & EPOLLRDHUP;
   co_return {len, hup};
 }
 
-inline Task<IOResult<std::size_t>> write_file(EpollScheduler &sched,
-                                              AsyncFile &file,
-                                              std::span<char const> buffer) {
-  // DEBUG() << "waiting for file to be ready\n";
+inline Task<IOResult<std::size_t>>
+write_file_best_effort(EpollScheduler &sched, AsyncFile &file,
+                       std::span<char const> buffer) {
   auto ev = co_await wait_file_event(sched, file, EPOLLOUT | EPOLLHUP);
-  // DEBUG() << "file is ready\n";
-  auto len = write_file_sync(file, buffer);
   bool hup = ev & EPOLLHUP;
+  if (hup) {
+    co_return {0, hup};
+  }
+  auto len = write_file_sync(file, buffer);
   co_return {len, hup};
 }
 
-inline Task<IOResult<std::string>> read_string(EpollScheduler &sched,
-                                               AsyncFile &file) {
+inline Task<IOResult<std::string>>
+read_string_best_effort(EpollScheduler &sched, AsyncFile &file) {
   co_await wait_file_event(sched, file, EPOLLIN);
   std::string s;
   size_t chunk = 64;
@@ -203,7 +209,7 @@ inline Task<IOResult<std::string>> read_string(EpollScheduler &sched,
     std::size_t exist = s.size();
     s.resize(exist + chunk);
     std::span<char> buffer(s.data() + exist, chunk);
-    auto res = co_await read_file(sched, file, buffer);
+    auto res = co_await read_file_best_effort(sched, file, buffer);
     auto len = res.result;
     auto rdhup = res.hup;
     if (len != chunk || rdhup) {
@@ -235,7 +241,31 @@ inline Task<IOResult<std::string>> getline(EpollScheduler &sched,
     }
     s.push_back(ch);
   }
+  if (s.ends_with(delim)) {
+    s.erase(s.size() - delim.size());
+  }
   co_return {.result = std::move(s)};
+}
+
+// Returns how many bytes are read.
+inline Task<IOResult<std::size_t>>
+read(EpollScheduler &sched, AsyncFileStream &f, std::span<char> buf) {
+  std::size_t i = 0;
+  while (i < buf.size()) {
+    int ch = getc(f);
+    if (ch == EOF && errno == EAGAIN) {
+      auto ev =
+          co_await wait_file_event(sched, f, EPOLLIN | EPOLLRDHUP | EPOLLHUP);
+      if (!(ev & EPOLLIN)) {
+        co_return {.result = i, .hup = true};
+      }
+      continue;
+    } else if (ch == EOF) {
+      THROW_SYSCALL("read (getc)");
+    }
+    buf[i++] = ch;
+  }
+  co_return {.result = i};
 }
 
 // May partially write a string if the EPOLLHUP is received.

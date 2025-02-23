@@ -1,5 +1,6 @@
 #pragma once
 
+#include <exception>
 #include <fcntl.h>
 #include <memory>
 #include <stdexcept>
@@ -17,17 +18,25 @@ struct AsyncFile {
 
   AsyncFile() : fd_(-1) {}
 
-  explicit AsyncFile(int fd, bool unblock = true, bool borrow = false) noexcept
+  explicit AsyncFile(int fd, bool nonblock = true, bool borrow = false) noexcept
       : fd_(fd), borrow_(borrow) {
-    if (fd != -1 && unblock) {
+    if (fd != -1 && nonblock) {
       set_nonblock();
     }
   }
 
-  AsyncFile(AsyncFile &&other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
+  AsyncFile(AsyncFile &&other) noexcept
+      : fd_(other.fd_), borrow_(other.borrow_) {
+    other.fd_ = -1;
+    other.borrow_ = false;
+  }
 
   AsyncFile &operator=(AsyncFile &&other) noexcept {
-    std::swap(fd_, other.fd_);
+    if (fd_ != -1) {
+      assert(fd_ != other.fd_);
+    }
+    AsyncFile temp(std::move(other));
+    std::swap(temp, *this);
     return *this;
   }
 
@@ -95,9 +104,7 @@ struct AsyncFileStream {
 
   struct FileCloser {
     void operator()(FILE *f) const {
-      if (f) {
-        CHECK_SYSCALL(fclose(f));
-      }
+      CHECK_SYSCALL(fclose(f));
     }
   };
 

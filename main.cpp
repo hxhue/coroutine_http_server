@@ -12,6 +12,7 @@
 #include "http.hpp"
 #include "socket.hpp"
 #include "task.hpp"
+#include "utility.hpp"
 
 using namespace coro;
 
@@ -39,47 +40,45 @@ private:
 };
 
 AsyncLoop loop;
+AsyncFileStream ain(dup_stdin(), "r");
+AsyncFileStream aout(dup_stdout(), "w");
+AsyncFileStream aerr(dup_stdin(), "w");
 
-Task<> async_write() {
+Task<> amain() {
   using namespace std::chrono_literals;
   using namespace std::string_view_literals;
-  auto f = AsyncFileStream(dup_stdout(), "w");
+
+  auto saddr = socket_address(ip_address("baidu.com"), 80);
+  auto client = AsyncFileStream(create_tcp_socket(saddr), "r+");
+  co_await socket_connect(loop, client, saddr);
+
   HTTPRequest request{
       .method = "GET",
-      .uri = "/api/tts?text=一二三四五",
+      .path = "/",
       .headers =
           {
-              {"host", "142857.red:8080"},
-              {"user-agent", "co_async"},
-              {"user-aGEnt", "co_async"},
+              {"host", "baidu.com"},
+              {"user-agent", "coro"},
               {"connection", "keep-alive"},
           },
   };
-  co_await request.write(loop, f);
-  co_return;
-}
+  co_await request.write_to(loop, client);
+  fflush(client);
 
-Task<> async_read() {
-  using namespace std::chrono_literals;
-  using namespace std::string_view_literals;
-  auto f = AsyncFileStream(dup_stdin(false, false), "r"); // disable cannon mode
-  while (true) {
-    auto res1 = co_await getline(loop, f, ":"sv);
-    DEBUG() << res1.result;
-    if (res1.hup) {
-      break;
-    }
-    auto res2 = co_await getline(loop, f);
-    DEBUG() << res2.result;
-    if (res2.hup) {
-      break;
-    }
+  // FIXME: handle ECONNRESET
+  HTTPResponse response;
+  co_await response.read_from(loop, client);
+
+  co_await fputs(loop, aout, std::format("Status: {}\n\n", response.status));
+  for (auto const &[k, v] : response.headers) {
+    co_await fputs(loop, aout, std::format("{}: {}\n", k, v));
   }
+  co_await fputs(loop, aout, std::format("\n{}", response.body));
   co_return;
 }
 
 int main() {
-  auto task = async_write();
+  auto task = amain();
   run_task(loop, task);
   task.result();
 }
