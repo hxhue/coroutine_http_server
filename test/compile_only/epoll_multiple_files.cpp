@@ -21,7 +21,7 @@ int main() {
 
   int read_fd = STDIN_FILENO;
   AsyncFile read_f{read_fd};
-  read_f.set_nonblock();
+  // read_f.set_nonblock();
 
   // Step 14: read from multiple fds.
   auto task = [](AsyncFile &read_f) -> Task<void> {

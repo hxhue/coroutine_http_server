@@ -8,39 +8,11 @@
 #include <unistd.h>
 #include <utility>
 
+#include "aio.hpp"
 #include "task.hpp"
 #include "utility.hpp"
 
 namespace coro {
-struct AsyncFile {
-  AsyncFile() : fd_(-1) {}
-
-  explicit AsyncFile(int fd) noexcept : fd_(fd) {}
-
-  AsyncFile(AsyncFile &&other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
-
-  AsyncFile &operator=(AsyncFile &&other) noexcept {
-    std::swap(fd_, other.fd_);
-    return *this;
-  }
-
-  ~AsyncFile() {
-    if (fd_ != -1) {
-      close(fd_);
-    }
-  }
-
-  int release() noexcept { return std::exchange(fd_, -1); }
-
-  void set_nonblock() {
-    int read_fd = fd_;
-    int flags = CHECK_SYSCALL(fcntl(read_fd, F_GETFL, 0));
-    flags = flags | O_NONBLOCK;
-    CHECK_SYSCALL(fcntl(read_fd, F_SETFL, flags));
-  }
-
-  int fd_;
-};
 
 using EpollEventMask = std::uint32_t;
 
@@ -198,11 +170,6 @@ inline std::size_t write_file_sync(AsyncFile &file,
   return ret;
 }
 
-template <typename T> struct IOResult {
-  T result{};
-  bool hup{}; // This means cannot write/read anymore.
-};
-
 inline Task<IOResult<std::size_t>>
 read_file(EpollScheduler &sched, AsyncFile &file, std::span<char> buffer) {
   auto ev = co_await wait_file_event(sched, file, EPOLLIN | EPOLLRDHUP);
@@ -233,7 +200,9 @@ inline Task<IOResult<std::string>> read_string(EpollScheduler &sched,
     std::size_t exist = s.size();
     s.resize(exist + chunk);
     std::span<char> buffer(s.data() + exist, chunk);
-    auto [len, rdhup] = co_await read_file(sched, file, buffer);
+    auto res = co_await read_file(sched, file, buffer);
+    auto len = res.result;
+    auto rdhup = res.hup;
     if (len != chunk || rdhup) {
       s.resize(exist + len);
       hup = rdhup;
@@ -244,4 +213,24 @@ inline Task<IOResult<std::string>> read_string(EpollScheduler &sched,
   }
   co_return {std::move(s), hup};
 }
+
+// May return a partially read string if the EPOLLRDHUP is received.
+inline Task<IOResult<std::string>> getline(EpollScheduler &sched,
+                                           AsyncFileStream &f,
+                                           std::string_view delim = "\n") {
+  std::string s;
+  while (!s.ends_with(delim)) {
+    int ch = getc(f);
+    if (ch == EOF) {
+      auto ev = co_await wait_file_event(sched, f, EPOLLIN | EPOLLRDHUP);
+      if (!(ev & EPOLLIN)) {
+        co_return {.result = std::move(s), .hup = true, .partial = true};
+      }
+      continue;
+    }
+    s.push_back(ch);
+  }
+  co_return {.result = std::move(s)};
+}
+
 } // namespace coro
