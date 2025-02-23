@@ -7,6 +7,16 @@
 #include <stdexcept>
 #include <string>
 
+// clang-format off
+#ifdef NDEBUG
+#define LOG_DEBUG if constexpr (false) std::cerr
+#else
+#define LOG_DEBUG if constexpr (true) std::cerr
+#endif
+#define LOG(level) LOG_##level
+#define DEBUG() LOG(DEBUG)
+// clang-format on
+
 namespace coro {
 inline auto check_syscall(int ret, const char *file, int line, const char *pf,
                           const char *expr) {
@@ -81,16 +91,6 @@ inline std::string escape(std::string_view sv) {
 }
 
 inline auto escape(char ch) { return escape(std::string_view{&ch, 1}); }
-
-// clang-format off
-#ifdef NDEBUG
-#define LOG_DEBUG if constexpr (false) std::cerr
-#else
-#define LOG_DEBUG if constexpr (true) std::cerr
-#endif
-#define LOG(level) LOG_##level
-#define DEBUG() LOG(DEBUG)
-// clang-format on
 
 template <typename Func> class Defer {
 public:
