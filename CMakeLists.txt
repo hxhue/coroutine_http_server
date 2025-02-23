@@ -11,3 +11,6 @@ add_subdirectory(extern/googletest)
 enable_testing()
 include(GoogleTest)
 add_subdirectory(test)
+
+# Examples.
+add_subdirectory(example)

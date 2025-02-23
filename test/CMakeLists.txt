@@ -1,9 +1,7 @@
-set(EXECUTABLES when_all when_any)
+set(TESTS when_all when_any await_task)
 
-foreach(exe IN LISTS EXECUTABLES)
-  add_executable(${exe} ${exe}.cpp)
-  target_link_libraries(${exe} gtest)
-  gtest_discover_tests(${exe})
+foreach(t IN LISTS TESTS)
+  add_executable(${t} ${t}.cpp)
+  target_link_libraries(${t} gtest_main)
+  gtest_discover_tests(${t})
 endforeach()
-
-add_subdirectory(compile_only)

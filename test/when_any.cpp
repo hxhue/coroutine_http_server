@@ -52,13 +52,8 @@ template <bool Throws = false> int when_any() {
   return result;
 }
 
-TEST(WhenAny, WhenAny) { EXPECT_EQ(when_any(), 1); }
+TEST(WhenAny, Basic) { EXPECT_EQ(when_any(), 1); }
 
-TEST(WhenAny, WhenAnyThrows) {
+TEST(WhenAny, Throws) {
   EXPECT_THROW({ when_any<true>(); }, std::runtime_error);
-}
-
-int main(int argc, char **argv) {
-  testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
 }
