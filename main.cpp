@@ -60,7 +60,6 @@ Task<> amain() {
   while (true) {
     auto res =
         co_await when_any(sleep_for(loop, 3s), read_file(loop, sock, buf));
-    // Why does epoll always signals EPOLLIN?
     if (auto *p = std::get_if<IOResult<std::size_t>>(&res)) {
       auto len = p->result;
       std::string_view sv{buf, len};

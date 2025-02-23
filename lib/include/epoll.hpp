@@ -4,7 +4,6 @@
 #include <chrono>
 #include <coroutine>
 #include <fcntl.h>
-#include <iostream>
 #include <sys/epoll.h>
 #include <unistd.h>
 #include <utility>
@@ -208,9 +207,6 @@ read_file(EpollScheduler &sched, AsyncFile &file, std::span<char> buffer) {
   auto ev = co_await wait_file_event(sched, file, EPOLLIN | EPOLLRDHUP);
   auto len = read_file_sync(file, buffer);
   bool hup = ev & EPOLLRDHUP;
-  // if (ev & ~EPOLLIN) {
-  //   DEBUG() << "what is this?\n";
-  // }
   co_return {len, hup};
 }
 
