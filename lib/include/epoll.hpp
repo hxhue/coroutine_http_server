@@ -224,12 +224,14 @@ inline Task<IOResult<std::string>> getline(EpollScheduler &sched,
   std::string s;
   while (!s.ends_with(delim)) {
     int ch = getc(f);
-    if (ch == EOF) {
+    if (ch == EOF && errno == EAGAIN) {
       auto ev = co_await wait_file_event(sched, f, EPOLLIN | EPOLLRDHUP);
       if (!(ev & EPOLLIN)) {
-        co_return {.result = std::move(s), .hup = true, .partial = true};
+        co_return {.result = std::move(s), .hup = true};
       }
       continue;
+    } else if (ch == EOF) {
+      THROW_SYSCALL("read (getc)");
     }
     s.push_back(ch);
   }
@@ -243,16 +245,22 @@ fputs(EpollScheduler &sched, AsyncFileStream &f, std::string_view sv) {
   std::size_t len = 0;
   for (char ch : sv) {
     auto res = putc(ch, f);
-    if (res == EOF) {
+    if (res == EOF && errno == EAGAIN) {
       auto ev = co_await wait_file_event(sched, f, EPOLLOUT | EPOLLHUP);
       if (!(ev & EPOLLOUT)) {
-        co_return {.result = len, .hup = true, .partial = true};
+        co_return {.result = len, .hup = true};
       }
       continue;
+    } else if (res == EOF) {
+      THROW_SYSCALL("write (putc)");
     }
     ++len;
   }
   co_return {.result = len};
+}
+
+inline void fflush(AsyncFileStream &f) {
+  CHECK_SYSCALL(fflush(static_cast<FILE *>(f)));
 }
 
 } // namespace coro

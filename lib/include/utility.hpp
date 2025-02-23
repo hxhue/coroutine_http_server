@@ -23,15 +23,16 @@ inline auto check_syscall(int ret, const char *file, int line, const char *pf,
   if (ret == -1) {
     int err = errno;
     std::string s = "[" + std::to_string(err) + "] " + strerrorname_np(err);
-    s += "\n\nLocation: ";
+    s += "\nline: ";
     s += file;
     s += ":";
     s += std::to_string(line);
-    s += "\nFunction: ";
-    s += pf;
-    s += "\nExpresion: ";
+    if (pf && *pf) {
+      s += "\nfunc: ";
+      s += pf;
+    }
+    s += "\nnote: ";
     s += expr;
-    s += "\n";
     throw std::runtime_error(s);
   }
   return ret;

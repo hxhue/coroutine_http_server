@@ -174,9 +174,7 @@ struct [[nodiscard("maybe co_await this task?")]] Task {
     }
 
     T await_resume() const {
-      if constexpr (!std::is_same_v<void, T>) {
-        return coro_.promise().result();
-      }
+      return coro_.promise().result();
     }
 
     TaskAwaiter(std::coroutine_handle<promise_type> coro)
@@ -188,6 +186,8 @@ struct [[nodiscard("maybe co_await this task?")]] Task {
   auto operator co_await() const { return TaskAwaiter(coro_); }
 
   std::coroutine_handle<promise_type> coro_{};
+
+  decltype(auto) result() const { return coro_.promise().result(); }
 };
 
 struct ReturnPreviousAwaiter {

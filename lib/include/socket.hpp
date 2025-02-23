@@ -41,7 +41,7 @@ inline IpAddress ip_address(char const *ip_or_domain) {
     THROW_SYSCALL("getaddrinfo");
   }
   if (!res) {
-    THROW_SYSCALL("didn't get a result");
+    THROW_SYSCALL("didn't get a result from getaddrinfo");
   }
   if (res->ai_family == AF_INET) {
     auto *ipv4 = (struct sockaddr_in *)res->ai_addr;
@@ -130,7 +130,7 @@ inline Task<void> socket_connect(EpollScheduler &sched, AsyncFile &sock,
                     SO_ERROR);  // get and clear the pending error
   if (pending_error != 0) {
     errno = pending_error;
-    THROW_SYSCALL("SO_ERROR");
+    THROW_SYSCALL("getsockopt SO_ERROR");
   }
 }
 

@@ -40,10 +40,9 @@ private:
 
 AsyncLoop loop;
 
-Task<> amain() {
+Task<> async_write() {
   using namespace std::chrono_literals;
   using namespace std::string_view_literals;
-  // FIXME: when mode is incorrect, there is no error message.
   auto f = AsyncFileStream(dup_stdout(), "w");
   HTTPRequest request{
       .method = "GET",
@@ -60,7 +59,27 @@ Task<> amain() {
   co_return;
 }
 
+Task<> async_read() {
+  using namespace std::chrono_literals;
+  using namespace std::string_view_literals;
+  auto f = AsyncFileStream(dup_stdin(false, false), "r"); // disable cannon mode
+  while (true) {
+    auto res1 = co_await getline(loop, f, ":"sv);
+    DEBUG() << res1.result;
+    if (res1.hup) {
+      break;
+    }
+    auto res2 = co_await getline(loop, f);
+    DEBUG() << res2.result;
+    if (res2.hup) {
+      break;
+    }
+  }
+  co_return;
+}
+
 int main() {
-  auto task = amain();
+  auto task = async_write();
   run_task(loop, task);
+  task.result();
 }

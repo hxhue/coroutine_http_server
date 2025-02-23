@@ -108,9 +108,5 @@ struct AsyncFileStream {
 template <typename T> struct IOResult {
   T result{};
   bool hup{}; // This means cannot write/read anymore.
-              // Operations on both AsyncFile and AsyncFileStream can have this
-              // flag.
-  bool partial{}; // A result can be not partial even when there's a hup flag.
-                  // Operations on AsyncFileStream can have this flag.
 };
 } // namespace coro

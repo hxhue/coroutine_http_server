@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -8,6 +9,7 @@
 #include "aio.hpp"
 #include "epoll.hpp"
 #include "task.hpp"
+#include "utility.hpp"
 
 namespace coro {
 struct HTTPRequest {
@@ -29,25 +31,30 @@ struct HTTPRequest {
 
   Task<> write(EpollScheduler &sched, AsyncFileStream &f) {
     using namespace std::string_view_literals;
-    co_await fputs(sched, f, method);
-    co_await fputs(sched, f, method);
-    co_await fputs(sched, f, " "sv);
-    co_await fputs(sched, f, uri);
-    co_await fputs(sched, f, " HTTP/1.1\r\n"sv);
+    std::string s;
+    s += method;
+    s += " "sv;
+    s += uri;
+    s += " HTTP/1.1\r\n"sv;
     for (auto const &[k, v] : headers) {
-      co_await fputs(sched, f, k);
-      co_await fputs(sched, f, ": "sv);
-      co_await fputs(sched, f, v);
-      co_await fputs(sched, f, "\r\n"sv);
+      s += k;
+      s += ": "sv;
+      s += v;
+      s += "\r\n"sv;
     }
     if (body.empty()) {
-      co_await fputs(sched, f, "\r\n"sv);
+      s += "\r\n"sv;
     } else {
-      co_await fputs(sched, f, "content-length: "sv);
-      co_await fputs(sched, f, std::to_string(body.size()));
-      co_await fputs(sched, f, "\r\n"sv);
-      co_await fputs(sched, f, body);
+      s += "content-length: "sv;
+      s += std::to_string(body.size());
+      s += "\r\n"sv;
+      s += body;
     }
+    auto res = co_await fputs(sched, f, s);
+    if (res.hup) {
+      THROW_SYSCALL("write-end hung up");
+    }
+    fflush(f);
     co_return;
   }
 
