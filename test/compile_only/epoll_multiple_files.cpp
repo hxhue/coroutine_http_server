@@ -11,6 +11,8 @@
 #include "task.hpp"
 #include "utility.hpp"
 
+using namespace coro;
+
 EpollScheduler epoll_sched;
 TimedScheduler sched;
 

@@ -10,6 +10,8 @@
 
 #include "task.hpp"
 
+using namespace coro;
+
 template <bool Throws = false> int when_all() {
   using namespace std::chrono_literals;
   TimedScheduler scheduler;

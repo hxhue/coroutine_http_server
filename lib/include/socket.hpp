@@ -11,6 +11,8 @@
 #include "epoll.hpp"
 #include "utility.hpp"
 
+namespace coro {
+
 struct IpAddress {
   IpAddress(in_addr addr) noexcept : addr_(addr) {}
 
@@ -138,3 +140,4 @@ inline Task<AsyncFile> create_tcp_client(EpollScheduler &sched,
   co_await socket_connect(sched, sock, addr);
   co_return sock;
 }
+} // namespace coro

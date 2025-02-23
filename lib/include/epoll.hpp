@@ -11,6 +11,7 @@
 #include "task.hpp"
 #include "utility.hpp"
 
+namespace coro {
 struct AsyncFile {
   AsyncFile() : fd_(-1) {}
 
@@ -243,3 +244,4 @@ inline Task<IOResult<std::string>> read_string(EpollScheduler &sched,
   }
   co_return {std::move(s), hup};
 }
+} // namespace coro

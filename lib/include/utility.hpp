@@ -3,10 +3,11 @@
 #include <cassert>
 #include <cerrno>
 #include <cstring>
+#include <iostream> // for LOG_DEBUG
 #include <stdexcept>
 #include <string>
-#include <iostream> // for LOG_DEBUG
 
+namespace coro {
 inline auto check_syscall(int ret, const char *file, int line, const char *pf,
                           const char *expr) {
   if (ret == -1) {
@@ -100,3 +101,4 @@ public:
 private:
   Func callback;
 };
+} // namespace coro

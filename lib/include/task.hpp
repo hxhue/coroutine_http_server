@@ -13,9 +13,10 @@
 #include <unordered_set>
 #include <variant>
 
-#include "utility.hpp"
 #include "type_name.hpp"
+#include "utility.hpp"
 
+namespace coro {
 template <class A>
 concept Awaiter = requires(A a, std::coroutine_handle<> h) {
   { a.await_ready() };
@@ -587,3 +588,4 @@ template <class T, class P> void spawn_task(Task<T, P> const &t) {
   auto a = t.operator co_await();
   a.await_suspend(std::noop_coroutine()).resume();
 }
+} // namespace coro

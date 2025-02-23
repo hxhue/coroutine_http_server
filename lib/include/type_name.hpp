@@ -6,6 +6,7 @@
 #include <string_view>
 #include <utility> // ::std::index_sequence
 
+namespace coro {
 namespace type_nam {
 
 template <::std::size_t... Idxs>
@@ -51,3 +52,4 @@ template <typename T> constexpr auto type_name() -> ::std::string_view {
 } // namespace type_nam
 
 using type_nam::type_name;
+} // namespace coro
