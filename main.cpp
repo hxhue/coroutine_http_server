@@ -9,6 +9,7 @@
 
 #include "aio.hpp"
 #include "epoll.hpp"
+#include "http.hpp"
 #include "socket.hpp"
 #include "task.hpp"
 
@@ -42,59 +43,24 @@ AsyncLoop loop;
 Task<> amain() {
   using namespace std::chrono_literals;
   using namespace std::string_view_literals;
-  auto f = AsyncFileStream(dup_stdin(false, false), "r"); // disable cannon mode
-  while (true) {
-    // std::string s;
-    // while (!s.ends_with(": ")) {
-    //   int ch = getc(f);
-    //   if (ch == EOF) {
-    //     auto ev = co_await wait_file_event(loop, f, EPOLLIN | EPOLLRDHUP);
-    //     if (!(ev & EPOLLIN)) {
-    //       DEBUG() << "\nHung up" << std::endl;
-    //       co_return;
-    //     }
-    //     continue;
-    //   }
-    //   s.push_back(ch);
-    // }
-    // DEBUG() << s;
-    // s.clear();
-    // while (!s.ends_with("\n")) {
-    //   int ch = getc(f);
-    //   if (ch == EOF) {
-    //     auto ev = co_await wait_file_event(loop, f, EPOLLIN | EPOLLRDHUP);
-    //     if (!(ev & EPOLLIN)) {
-    //       DEBUG() << "Hung up" << std::endl;
-    //       co_return;
-    //     }
-    //     continue;
-    //   }
-    //   s.push_back(ch);
-    // }
-    // DEBUG() << s;
-    auto res1 = co_await getline(loop, f, ":"sv);
-    DEBUG() << res1.result;
-    if (res1.partial) {
-      break;
-    }
-    auto res2 = co_await getline(loop, f);
-    DEBUG() << res2.result;
-    if (res2.partial) {
-      break;
-    }
-  }
+  // FIXME: when mode is incorrect, there is no error message.
+  auto f = AsyncFileStream(dup_stdout(), "w");
+  HTTPRequest request{
+      .method = "GET",
+      .uri = "/api/tts?text=一二三四五",
+      .headers =
+          {
+              {"host", "142857.red:8080"},
+              {"user-agent", "co_async"},
+              {"user-aGEnt", "co_async"},
+              {"connection", "keep-alive"},
+          },
+  };
+  co_await request.write(loop, f);
   co_return;
 }
 
 int main() {
-  using namespace std::chrono_literals;
-
-  // struct termios tc;
-  // tcgetattr(STDIN_FILENO, &tc);
-  // tc.c_lflag &= ~ICANON;
-  // tc.c_lflag &= ~ECHO;
-  // tcsetattr(STDIN_FILENO, TCSANOW, &tc);
-
   auto task = amain();
   run_task(loop, task);
 }

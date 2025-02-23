@@ -3,7 +3,10 @@
 #include <cerrno>
 #include <chrono>
 #include <coroutine>
+#include <cstddef>
+#include <cstdio>
 #include <fcntl.h>
+#include <string>
 #include <sys/epoll.h>
 #include <unistd.h>
 #include <utility>
@@ -231,6 +234,25 @@ inline Task<IOResult<std::string>> getline(EpollScheduler &sched,
     s.push_back(ch);
   }
   co_return {.result = std::move(s)};
+}
+
+// May partially write a string if the EPOLLHUP is received.
+// Returns the length of the written string.
+inline Task<IOResult<std::size_t>>
+fputs(EpollScheduler &sched, AsyncFileStream &f, std::string_view sv) {
+  std::size_t len = 0;
+  for (char ch : sv) {
+    auto res = putc(ch, f);
+    if (res == EOF) {
+      auto ev = co_await wait_file_event(sched, f, EPOLLOUT | EPOLLHUP);
+      if (!(ev & EPOLLOUT)) {
+        co_return {.result = len, .hup = true, .partial = true};
+      }
+      continue;
+    }
+    ++len;
+  }
+  co_return {.result = len};
 }
 
 } // namespace coro
