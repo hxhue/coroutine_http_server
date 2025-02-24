@@ -63,7 +63,8 @@ private:
 inline AsyncFile dup_std_file(int fd) {
   if (!(fd == STDIN_FILENO || fd == STDOUT_FILENO || fd == STDERR_FILENO)) {
     throw std::invalid_argument(
-        "fd must be one of STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO");
+        "fd must be one of STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO\n" +
+        SOURCE_LOCATION());
   }
   AsyncFile f(CHECK_SYSCALL(dup(fd)));
   return f;
@@ -103,9 +104,7 @@ struct AsyncFileStream {
   operator AsyncFile &() { return af_; }
 
   struct FileCloser {
-    void operator()(FILE *f) const {
-      CHECK_SYSCALL(fclose(f));
-    }
+    void operator()(FILE *f) const { CHECK_SYSCALL(fclose(f)); }
   };
 
   AsyncFile af_;

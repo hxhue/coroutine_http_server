@@ -51,7 +51,8 @@ inline IpAddress ip_address(char const *ip_or_domain) {
     return ipv6->sin6_addr;
   }
 
-  throw std::invalid_argument("invalid domain name or ip address");
+  throw std::invalid_argument("invalid domain name or ip address\n" +
+                              SOURCE_LOCATION());
 }
 
 struct SocketAddress {

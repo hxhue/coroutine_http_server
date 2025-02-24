@@ -18,19 +18,29 @@
 // clang-format on
 
 namespace coro {
+inline auto get_source_location_string(const char *file, int line,
+                                       const char *pf) {
+  std::string s;
+  s += "line: ";
+  s += file;
+  s += ":";
+  s += std::to_string(line);
+  if (pf && *pf) {
+    s += "\nfunc: ";
+    s += pf;
+  }
+  return s;
+}
+
+struct SourceLocationException {};
+
 inline auto check_syscall(int ret, const char *file, int line, const char *pf,
                           const char *expr) {
   if (ret == -1) {
     int err = errno;
     std::string s = "[" + std::to_string(err) + "] " + strerrorname_np(err);
-    s += "\nline: ";
-    s += file;
-    s += ":";
-    s += std::to_string(line);
-    if (pf && *pf) {
-      s += "\nfunc: ";
-      s += pf;
-    }
+    s += "\n";
+    s += get_source_location_string(file, line, pf);
     s += "\nnote: ";
     s += expr;
     throw std::runtime_error(s);
@@ -46,6 +56,9 @@ inline auto check_syscall(int ret, const char *file, int line, const char *pf,
 
 #define THROW_SYSCALL(str)                                                     \
   check_syscall(-1, __FILE__, __LINE__, __PRETTY_FUNCTION__, str)
+
+#define SOURCE_LOCATION()                                                      \
+  get_source_location_string(__FILE__, __LINE__, __PRETTY_FUNCTION__)
 
 // https://stackoverflow.com/a/2417875/
 template <class OutIter>

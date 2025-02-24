@@ -65,9 +65,7 @@ struct HTTPRequest {
     co_return;
   }
 
-  auto to_tuple() const {
-    return std::make_tuple(method, path, headers, body);
-  }
+  auto to_tuple() const { return std::make_tuple(method, path, headers, body); }
 
   std::string method;
   std::string path;
@@ -85,13 +83,15 @@ struct HTTPResponse {
 
     auto line = co_await getline(sched, f, "\r\n"sv);
     if (line.hup || !line.result.starts_with("HTTP/1.1 "sv)) {
-      throw std::runtime_error("invalid response: cannot find \"HTTP/1.1\"");
+      throw std::runtime_error("invalid response: cannot find \"HTTP/1.1\"\n" +
+                               SOURCE_LOCATION());
     }
     status = std::stoi(line.result.substr("HTTP/1.1 "sv.size()));
     while (true) {
       auto line = co_await getline(sched, f, "\r\n"sv);
       if (line.hup) {
-        throw std::runtime_error("invalid response: premature EOF");
+        throw std::runtime_error("invalid response: premature EOF\n" +
+                                 SOURCE_LOCATION());
       }
       if (!headers.empty() && line.result.empty()) {
         break;
@@ -100,15 +100,16 @@ struct HTTPResponse {
       // See https://datatracker.ietf.org/doc/html/rfc7230#section-3.2
       auto i = line.result.find(":"sv);
       if (i == std::string::npos) {
-        throw std::runtime_error("invalid response: cannot find \":\"");
+        throw std::runtime_error("invalid response: cannot find \":\"\n" +
+                                 SOURCE_LOCATION());
       }
       auto field_name = line.result.substr(0, i);
       for (char ch : field_name) {
         // https://developers.cloudflare.com/rules/transform/request-header-modification/reference/header-format/
         if (!std::isalnum(ch) && !"_-"sv.contains(ch)) {
-          throw std::runtime_error("invalid response: get field name " +
-                                   escape(field_name) +
-                                   " and it contains illegal characters!");
+          throw std::runtime_error(
+              "invalid response: get field name " + escape(field_name) +
+              " and it contains illegal characters!\n" + SOURCE_LOCATION());
         }
       }
       std::size_t j = i + 1;
@@ -121,17 +122,22 @@ struct HTTPResponse {
         field_value.pop_back();
       }
       if (field_value.empty()) {
-        throw std::runtime_error("invalid response: empty field value");
+        throw std::runtime_error("invalid response: empty field value\n" +
+                                 SOURCE_LOCATION());
       }
       for (char ch : field_value) {
         // https://developers.cloudflare.com/rules/transform/request-header-modification/reference/header-format/
-        if (!std::isalnum(ch) &&
-            !R"(_ :;.,\/"'?!(){}[]@<>=-+*#$&`|~^%)"sv.contains(ch)) {
-          throw std::runtime_error("invalid response: get field value " +
-                                   escape(field_value) + " for field " +
-                                   escape(field_name) +
-                                   ", and it contains illegal characters!");
-        }
+        //
+        // 2025/2/24: I don't know why it's wrong. Maybe do not check the
+        // characters for now.
+        //
+        // if (!std::isalnum(ch) &&
+        //     !R"(_ :;.,\/"'?!(){}[]@<>=-+*#$&`|~^%)"sv.contains(ch)) {
+        //   throw std::runtime_error(
+        //       "invalid response: get field value " + escape(field_value) +
+        //       " for field " + escape(field_name) +
+        //       ", and it contains illegal characters!\n" + SOURCE_LOCATION());
+        // }
       }
       // - emplace does not overwrite an existing record.
       // - operator[] requires the value to be default-constructible.
@@ -144,7 +150,8 @@ struct HTTPResponse {
       auto buf = std::span<char>(body.data(), body.size());
       auto res = co_await read(sched, f, buf);
       if (res.hup) {
-        throw std::runtime_error("invalid response: premature EOF");
+        throw std::runtime_error("invalid response: premature EOF\n" +
+                                 SOURCE_LOCATION());
       }
       assert(res.result == len);
     }

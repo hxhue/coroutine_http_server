@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <fcntl.h>
 #include <iostream>
@@ -48,24 +49,25 @@ Task<> amain() {
   using namespace std::chrono_literals;
   using namespace std::string_view_literals;
 
-  auto saddr = socket_address(ip_address("baidu.com"), 80);
+  const char *host = "142857.red";
+  std::uint16_t port = 80;
+  auto saddr = socket_address(ip_address(host), port);
   auto client = AsyncFileStream(create_tcp_socket(saddr), "r+");
   co_await socket_connect(loop, client, saddr);
 
   HTTPRequest request{
       .method = "GET",
-      .path = "/",
+      .path = "/api/tts?text=小朋友你好",
       .headers =
           {
-              {"host", "baidu.com"},
-              {"user-agent", "coro"},
+              {"host", host},
+              {"user-agent", "Teapot"},
               {"connection", "keep-alive"},
           },
   };
   co_await request.write_to(loop, client);
   fflush(client);
 
-  // FIXME: handle ECONNRESET
   HTTPResponse response;
   co_await response.read_from(loop, client);
 
