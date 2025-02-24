@@ -46,10 +46,9 @@ AsyncFileStream aout(dup_stdout(), "w");
 AsyncFileStream aerr(dup_stdin(), "w");
 
 Task<> amain() {
-  using namespace std::chrono_literals;
-  using namespace std::string_view_literals;
+  using namespace std::literals;
 
-  const char *host = "142857.red";
+  const char *host = "baidu.com";
   std::uint16_t port = 80;
   auto saddr = socket_address(ip_address(host), port);
   auto client = AsyncFileStream(create_tcp_socket(saddr), "r+");
@@ -57,7 +56,7 @@ Task<> amain() {
 
   HTTPRequest request{
       .method = "GET",
-      .path = "/api/tts?text=小朋友你好",
+      .uri = "/",
       .headers =
           {
               {"host", host},

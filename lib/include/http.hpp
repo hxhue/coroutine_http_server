@@ -42,7 +42,7 @@ struct HTTPRequest {
     std::string s;
     s += method;
     s += " "sv;
-    s += path;
+    s += uri;
     s += " HTTP/1.1\r\n"sv;
     for (auto const &[k, v] : headers) {
       s += k;
@@ -56,19 +56,24 @@ struct HTTPRequest {
       s += "content-length: "sv;
       s += std::to_string(body.size());
       s += "\r\n"sv;
-      s += body;
     }
+    // Send headers.
     auto res = co_await fputs(sched, f, s);
+    if (res.hup) {
+      THROW_SYSCALL("write-end hung up");
+    }
+    // Send body.
+    res = co_await fputs(sched, f, body);
     if (res.hup) {
       THROW_SYSCALL("write-end hung up");
     }
     co_return;
   }
 
-  auto to_tuple() const { return std::make_tuple(method, path, headers, body); }
+  auto to_tuple() const { return std::make_tuple(method, uri, headers, body); }
 
   std::string method;
-  std::string path;
+  std::string uri;
   HTTPHeaders headers;
   std::string body;
 };

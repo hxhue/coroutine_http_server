@@ -16,10 +16,12 @@ Schedulers:
 - `TimedScheduler`
   - Stores coroutines waiting for time.
   - e.g. `sleep_for` and `sleep_until`.
-- `EpollScheduler`
+- `EpollScheduler` (Blocking)
   - Stores coroutines waiting for files to become ready.
   - e.g. `AsyncFile`, `wait_file_event`, etc.
   - NOTE: Instead of registering function pointers to `epoll_event`, every waiter registers a `EpollFilePromise*`. When epoll signals an event, it provides us with a coroutine handle to resume. Unlike a standard function pointer, when a coroutine returns from the `resume()` call, it does not necessarily reach its conclusion. It can be launched, but not finished.
+
+A blocking scheduler should be put at the end of a loop, making sure that there're no other tasks that are ready to run. They normally come with a timeout so we can check for new tasks.
 
 File operations:
 
@@ -115,3 +117,4 @@ Development setup:
 
 - [C++ Coroutines: Understanding Symmetric Transfer](https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer)
 - https://github.com/archibate/co_async
+- [Lord of io_uring](https://unixism.net/loti/index.html)
