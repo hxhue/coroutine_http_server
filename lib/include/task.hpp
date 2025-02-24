@@ -52,7 +52,6 @@ concept PreviousPromise = requires(T p) {
   { p.prev_ } -> std::convertible_to<std::coroutine_handle<>>;
 };
 
-// 用保存上个协程句柄的方式实现了有栈协程的恢复功能。
 // https://en.cppreference.com/w/cpp/coroutine/noop_coroutine
 struct PreviousAwaiter {
   bool await_ready() const noexcept { return false; }

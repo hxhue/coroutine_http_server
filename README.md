@@ -106,6 +106,8 @@ git submodule add https://github.com/google/googletest.git extern/googletest
 git submodule update --init --recursive
 ```
 
+Install `liburing` by `sudo apt install liburing-dev`.
+
 Then run cmake commands to build the project.
 
 Development setup:
