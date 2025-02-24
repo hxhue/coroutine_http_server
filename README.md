@@ -16,14 +16,18 @@ Schedulers:
 - `TimedScheduler`
   - Stores coroutines waiting for time.
   - e.g. `sleep_for` and `sleep_until`.
-- `EpollScheduler`.
+- `EpollScheduler`
   - Stores coroutines waiting for files to become ready.
   - e.g. `AsyncFile`, `wait_file_event`, etc.
   - NOTE: Instead of registering function pointers to `epoll_event`, every waiter registers a `EpollFilePromise*`. When epoll signals an event, it provides us with a coroutine handle to resume. Unlike a standard function pointer, when a coroutine returns from the `resume()` call, it does not necessarily reach its conclusion. It can be launched, but not finished.
 
 File operations:
 
-- Reading operations works by wrapping `getc` on a fd with `O_NONBLOCK`.
+- The operations encapsulates `getc` and `putc` around a `FILE*` that is associated with non-blocking file descriptors.
+- `AsyncFile` is to a file descriptor what `std::unique_ptr` is to a raw pointer.
+- `AsyncFileStream` serves as a wrapper for `AsyncFile`, analogous to how `FILE*` operates.
+
+---
 
 🚧 *Where to put this?*
 
