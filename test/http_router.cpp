@@ -58,6 +58,23 @@ TEST(HTTPRouterTest, TwoRoutes) {
   ASSERT_EQ(handler4, nullptr);
 }
 
+TEST(HTTPRouterTest, RootRoute) {
+  using namespace coro;
+  HTTPRouter router;
+
+  auto f1 = [](HTTPRequest) -> Task<HTTPResponse> { co_return HTTPResponse{}; };
+  auto f2 = [](HTTPRequest) -> Task<HTTPResponse> { co_return HTTPResponse{}; };
+
+  router.route(HTTPMethod::ANY, "/", f1);
+  router.route(HTTPMethod::GET, "/hello", f2);
+
+  auto handler1 = router.find_route(HTTPMethod::GET, "/hello");
+  ASSERT_TRUE(handler1.target<decltype(f2)>());
+
+  auto handler2 = router.find_route(HTTPMethod::POST, "/hello/world");
+  ASSERT_TRUE(handler2.target<decltype(f1)>());
+}
+
 TEST(HTTPRouterTest, AnyMethodRoute) {
   using namespace coro;
   HTTPRouter router;

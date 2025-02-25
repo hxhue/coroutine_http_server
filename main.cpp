@@ -79,17 +79,19 @@ Task<> amain() {
 }
 
 int main() {
-  // auto task = amain();
-  // run_task(loop, task);
-  // task.result();
-
   HTTPRouter r;
-  r.route(HTTPMethod::GET, "/home/sa/", [](HTTPRequest req) -> Task<HTTPResponse> {
+  r.route(HTTPMethod::GET, "/home", [](HTTPRequest req) -> Task<HTTPResponse> {
     HTTPResponse res;
     res.status = 200;
     res.headers["Content-Type"] = "text/plain";
     res.body = "Hello, World!";
     co_return res;
   });
-  // TODO: an http server that can route
+  r.route(HTTPMethod::GET, "/", [](HTTPRequest req) -> Task<HTTPResponse> {
+    HTTPResponse res;
+    res.status = 302;
+    res.headers["Location"] = "/home";
+    res.body = "Hello, World!";
+    co_return res;
+  });
 }

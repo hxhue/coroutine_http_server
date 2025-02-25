@@ -448,6 +448,9 @@ struct HTTPRouter {
     std::reference_wrapper<std::unique_ptr<Node>> cur = root;
     for (auto com : std::views::split(uri, "/"sv)) {
       auto sv = std::string_view{com};
+      if (sv.empty()) {
+        continue;
+      }
       // DEBUG() << " " << sv;
       auto it = cur.get()->children.find(sv);
       if (it == cur.get()->children.end()) {
@@ -480,8 +483,20 @@ struct HTTPRouter {
     }
     std::reference_wrapper<const std::unique_ptr<Node>> cur = root;
     HTTPHandler h = nullptr;
+    // Try root.
+    auto jt = cur.get()->handlers.find(method);
+    if (jt == cur.get()->handlers.end()) {
+      jt = cur.get()->handlers.find(HTTPMethod::ANY);
+    }
+    if (jt != cur.get()->handlers.end()) {
+      h = jt->second; // Longest possible match.
+    }
+    // Try longer components.
     for (auto com : std::views::split(uri, "/"sv)) {
       auto sv = std::string_view{com};
+      if (sv.empty()) {
+        continue;
+      }
       auto it = cur.get()->children.find(sv);
       if (it == cur.get()->children.end()) {
         break;
