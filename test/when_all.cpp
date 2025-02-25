@@ -46,8 +46,8 @@ template <bool Throws = false> int when_all() {
   return result;
 }
 
-TEST(WhenAll, Basic) { EXPECT_EQ(when_all(), 3); }
+TEST(WhenAllTest, Basic) { EXPECT_EQ(when_all(), 3); }
 
-TEST(WhenAll, Throws) {
+TEST(WhenAllTest, Throws) {
   EXPECT_THROW({ when_all<true>(); }, std::runtime_error);
 }

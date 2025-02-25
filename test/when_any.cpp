@@ -52,8 +52,8 @@ template <bool Throws = false> int when_any() {
   return result;
 }
 
-TEST(WhenAny, Basic) { EXPECT_EQ(when_any(), 1); }
+TEST(WhenAnyTest, Basic) { EXPECT_EQ(when_any(), 1); }
 
-TEST(WhenAny, Throws) {
+TEST(WhenAnyTest, Throws) {
   EXPECT_THROW({ when_any<true>(); }, std::runtime_error);
 }

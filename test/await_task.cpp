@@ -1,6 +1,5 @@
 #include <cassert>
 #include <cerrno>
-#include <iostream>
 
 #include <fcntl.h>
 #include <stdexcept>
@@ -14,7 +13,7 @@
 
 using namespace coro;
 
-TEST(AwaitTask, AwaitThrowingTask) {
+TEST(AwaitTaskTest, AwaitThrowingTask) {
   auto f = []() {
     struct AsyncLoop {
       void run() {

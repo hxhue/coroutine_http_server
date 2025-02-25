@@ -1,4 +1,10 @@
-set(TESTS when_all when_any await_task)
+set(TESTS
+  await_task
+  http_parse_uri
+  http_router
+  when_all
+  when_any
+)
 
 foreach(t IN LISTS TESTS)
   add_executable(${t} ${t}.cpp)
