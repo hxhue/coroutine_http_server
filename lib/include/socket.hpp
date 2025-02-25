@@ -99,6 +99,7 @@ inline AsyncFile create_udp_socket(SocketAddress const &addr) {
   return sock;
 }
 
+// It's an unconnected socket and can be either a server or a client later.
 inline AsyncFile create_tcp_socket(SocketAddress const &addr) {
   AsyncFile sock(CHECK_SYSCALL(socket(addr.addr_.ss_family, SOCK_STREAM, 0)));
   return sock;

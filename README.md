@@ -29,9 +29,7 @@ File operations:
 - `AsyncFile` is to a file descriptor what `std::unique_ptr` is to a raw pointer.
 - `AsyncFileStream` serves as a wrapper for `AsyncFile`, analogous to how `FILE*` operates.
 
----
-
-🚧 *Where to put this?*
+Utilities:
 
 - `when_all` and `when_any`
     - They both assume the tasks passed as arguments are not in the scheduler.
@@ -119,4 +117,4 @@ Development setup:
 
 - [C++ Coroutines: Understanding Symmetric Transfer](https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer)
 - https://github.com/archibate/co_async
-- [Lord of io_uring](https://unixism.net/loti/index.html)
+- [Lord of the io_uring](https://unixism.net/loti/index.html)
