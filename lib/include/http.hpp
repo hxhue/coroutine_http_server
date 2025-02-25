@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -7,6 +8,7 @@
 #include <memory>
 #include <ranges>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -168,13 +170,88 @@ inline bool valid_http_method(HTTPMethod method, bool allow_wildcard = false) {
 using HTTPHeaders =
     std::map<std::string, std::string, detail::CaseInsensitiveLess>;
 struct HTTPRequest {
+  Task<> read_from(EpollScheduler &sched, AsyncFileStream &f) {
+    using namespace std::literals;
+
+    clear();
+
+    auto line = co_await getline(sched, f, "\r\n"sv);
+    while (!line.result.empty() && std::isspace(line.result.back())) {
+      line.result.pop_back();
+    }
+    if (line.hup || !line.result.ends_with("HTTP/1.1"sv)) {
+      throw std::runtime_error("invalid request: cannot find \"HTTP/1.1\"\n" +
+                               SOURCE_LOCATION());
+    }
+    {
+      std::stringstream ss(line.result);
+      ss >> method >> uri;
+    }
+    if (http_method(method) == HTTPMethod::INVALID) {
+      throw std::runtime_error("invalid http method: " + method + "\n" +
+                               SOURCE_LOCATION());
+    }
+
+    // Headers.
+    while (true) {
+      auto line = co_await getline(sched, f, "\r\n"sv);
+      if (line.hup) {
+        throw std::runtime_error("invalid request: premature EOF\n" +
+                                 SOURCE_LOCATION());
+      }
+      if (!headers.empty() && line.result.empty()) {
+        break;
+      }
+      // The space after the colon is optional!
+      // See https://datatracker.ietf.org/doc/html/rfc7230#section-3.2
+      auto i = line.result.find(":"sv);
+      if (i == std::string::npos) {
+        throw std::runtime_error("invalid request: cannot find \":\"\n" +
+                                 SOURCE_LOCATION());
+      }
+      auto field_name = line.result.substr(0, i);
+      for (char ch : field_name) {
+        // https://developers.cloudflare.com/rules/transform/request-header-modification/reference/header-format/
+        if (!std::isalnum(ch) && !"_-"sv.contains(ch)) {
+          throw std::runtime_error(
+              "invalid request: get field name " + escape(field_name) +
+              " and it contains illegal characters!\n" + SOURCE_LOCATION());
+        }
+      }
+      std::size_t j = i + 1;
+      while (j < line.result.size() && std::isspace(line.result[j])) {
+        ++j;
+      }
+      // Ok as long as j <= line.result.size().
+      auto field_value = line.result.substr(j);
+      while (!field_value.empty() && std::isspace(field_value.back())) {
+        field_value.pop_back();
+      }
+      if (field_value.empty()) {
+        throw std::runtime_error("invalid request: empty field value\n" +
+                                 SOURCE_LOCATION());
+      }
+      headers.insert_or_assign(field_name, field_value);
+    }
+    if (auto p = headers.find("content-length"); p != headers.end()) {
+      auto len = std::stoi(p->second);
+      body.resize(len);
+      auto buf = std::span<char>(body.data(), body.size());
+      auto res = co_await read(sched, f, buf);
+      if (res.hup) {
+        throw std::runtime_error("invalid request: premature EOF\n" +
+                                 SOURCE_LOCATION());
+      }
+      assert(res.result == len);
+    }
+  }
 
   Task<> write_to(EpollScheduler &sched, AsyncFileStream &f) {
-    using namespace std::string_view_literals;
+    using namespace std::literals;
     std::string s;
-    s += method;
+    s += method.empty() ? "<empty>"sv : method;
     s += " "sv;
-    s += uri;
+    s += uri.empty() ? "<empty>"sv : uri;
     s += " HTTP/1.1\r\n"sv;
     for (auto const &[k, v] : headers) {
       if (detail::CaseInsensitiveEqual{}(k, "content-length")) {
@@ -288,6 +365,13 @@ struct HTTPRequest {
 
   ParsedURI parse_uri() const { return ParsedURI::from(uri); }
 
+  void clear() {
+    method.clear();
+    uri.clear();
+    headers.clear();
+    body.clear();
+  }
+
   std::string method;
   // Request Target: https://datatracker.ietf.org/doc/html/rfc7230#section-5.3
   std::string uri;
@@ -296,12 +380,11 @@ struct HTTPRequest {
 };
 
 struct HTTPResponse {
-  Task<> read_from(EpollScheduler &sched, AsyncFileStream &f) {
-    using namespace std::string_view_literals;
 
-    status = 0;
-    headers.clear();
-    body.clear();
+  Task<> read_from(EpollScheduler &sched, AsyncFileStream &f) {
+    using namespace std::literals;
+
+    clear();
 
     auto line = co_await getline(sched, f, "\r\n"sv);
     if (line.hup || !line.result.starts_with("HTTP/1.1 "sv)) {
@@ -379,7 +462,77 @@ struct HTTPResponse {
     }
   }
 
+  Task<> write_to(EpollScheduler &sched, AsyncFileStream &f) {
+    using namespace std::literals;
+    std::string s;
+
+    // Write the status line
+    s += "HTTP/1.1 "sv;
+    s += std::to_string(status);
+    s += " "sv;
+    s += status_message(status);
+    s += "\r\n"sv;
+
+    // Write the headers, excluding "content-length" if it exists
+    for (auto const &[k, v] : headers) {
+      if (detail::CaseInsensitiveEqual{}(k, "content-length")) {
+        continue;
+      }
+      s += k;
+      s += ": "sv;
+      s += v;
+      s += "\r\n"sv;
+    }
+
+    // Write the content-length header if there is a body
+    if (!body.empty()) {
+      s += "content-length: "sv;
+      s += std::to_string(body.size());
+      s += "\r\n"sv;
+    }
+
+    // End of headers
+    s += "\r\n"sv;
+
+    // Send headers
+    auto res = co_await fputs(sched, f, s);
+    if (res.hup) {
+      THROW_SYSCALL("write-end hung up");
+    }
+
+    // Send body if it exists
+    if (!body.empty()) {
+      res = co_await fputs(sched, f, body);
+      if (res.hup) {
+        THROW_SYSCALL("write-end hung up");
+      }
+    }
+
+    co_return;
+  }
+
   auto to_tuple() const { return std::make_tuple(status, headers, body); }
+
+  static std::string_view status_message(int status) {
+    using namespace std::literals;
+    switch (status) {
+    case 200:
+      return "OK"sv;
+    case 404:
+      return "Not Found"sv;
+    case 500:
+      return "Internal Server Error"sv;
+    // ...
+    default:
+      return "Unknown"sv;
+    }
+  }
+
+  void clear() {
+    status = 0;
+    headers.clear();
+    body.clear();
+  }
 
   int status;
   HTTPHeaders headers;
@@ -462,6 +615,10 @@ struct HTTPRouter {
     }
     // DEBUG() << "\n";
     cur.get()->handlers[method] = std::move(handler);
+  }
+
+  HTTPHandler find_route(std::string_view method, std::string_view uri) const {
+    return find_route(http_method(method), uri);
   }
 
   HTTPHandler find_route(HTTPMethod method, std::string_view uri) const {

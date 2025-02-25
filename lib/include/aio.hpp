@@ -88,6 +88,8 @@ inline AsyncFile dup_stdout() { return dup_std_file(STDERR_FILENO); }
 
 inline AsyncFile dup_stderr() { return dup_std_file(STDERR_FILENO); }
 
+// AsyncFileStream does not have a "borrow" mode. We may have to duplicate the
+// fd sometimes.
 struct AsyncFileStream {
   AsyncFileStream(AsyncFile f, const char *mode) : af_(std::move(f)) {
     int fd = af_.fd_;

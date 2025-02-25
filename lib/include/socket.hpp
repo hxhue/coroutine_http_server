@@ -94,14 +94,19 @@ inline SocketAddress socket_address(IpAddress ip, int port) {
                     ip.addr_);
 }
 
-inline AsyncFile create_udp_socket(SocketAddress const &addr) {
-  AsyncFile sock(CHECK_SYSCALL(socket(addr.addr_.ss_family, SOCK_DGRAM, 0)));
+inline AsyncFile create_udp_socket(sa_family_t const &family) {
+  AsyncFile sock(CHECK_SYSCALL(socket(family, SOCK_DGRAM, 0)));
   return sock;
 }
 
 // It's an unconnected socket and can be either a server or a client later.
-inline AsyncFile create_tcp_socket(SocketAddress const &addr) {
-  AsyncFile sock(CHECK_SYSCALL(socket(addr.addr_.ss_family, SOCK_STREAM, 0)));
+// inline AsyncFile create_tcp_socket(SocketAddress const &addr) {
+//   AsyncFile sock(CHECK_SYSCALL(socket(addr.addr_.ss_family, SOCK_STREAM,
+//   0))); return sock;
+// }
+
+inline AsyncFile create_tcp_socket(sa_family_t const &family) {
+  AsyncFile sock(CHECK_SYSCALL(socket(family, SOCK_STREAM, 0)));
   return sock;
 }
 
@@ -138,7 +143,7 @@ inline Task<void> socket_connect(EpollScheduler &sched, AsyncFile &sock,
 
 inline Task<AsyncFile> create_tcp_client(EpollScheduler &sched,
                                          SocketAddress const &addr) {
-  auto sock = create_tcp_socket(addr);
+  auto sock = create_tcp_socket(addr.addr_.ss_family);
   co_await socket_connect(sched, sock, addr);
   co_return sock;
 }
