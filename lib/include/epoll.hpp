@@ -62,6 +62,11 @@ struct EpollScheduler {
       // Let the promise know which events occur.
       promise.set_resume_events(event.events);
 
+      // DEBUG() << std::format("epoll loop resumes: promise: {:p} ev: 0x{:x}",
+      //                        (void *)(event.data.ptr),
+      //                        (unsigned)event.events)
+      //         << std::endl;
+
       // When epoll gives us an event, we get a coroutine handle from data.ptr
       // and resume it.
       auto h = std::coroutine_handle<EpollFilePromise>::from_promise(promise);
@@ -99,7 +104,7 @@ struct EpollFileAwaiter {
     if (!sched_.add_listener(promise, epoll_op_)) {
       suspend = false;
       promise.awaiter_ = nullptr;
-      // DEBUG() << "add_listener failed\n";
+      THROW_SYSCALL("epoll_ctl");
     }
     return suspend;
   }
@@ -129,6 +134,10 @@ bool EpollScheduler::add_listener(EpollFilePromise &promise, int epoll_op) {
   struct epoll_event event;
   event.events = promise.awaiter_->events_;
   event.data.ptr = &promise;
+
+  // DEBUG() << std::format("add_lister: epoll_ctl: fd={} ev=0x{:x}\n",
+  //                        promise.awaiter_->fd_, promise.awaiter_->events_);
+
   auto ret = epoll_ctl(epoll_, epoll_op, promise.awaiter_->fd_, &event);
   if (ret == -1) {
     return false;
@@ -140,6 +149,8 @@ bool EpollScheduler::add_listener(EpollFilePromise &promise, int epoll_op) {
 }
 
 void EpollScheduler::remove_listener(EpollFilePromise &promise) {
+  // DEBUG() << std::format("remove_lister: epoll_ctl: fd={}\n",
+  //                        promise.awaiter_->fd_);
   CHECK_SYSCALL(epoll_ctl(epoll_, EPOLL_CTL_DEL, promise.awaiter_->fd_, NULL));
   --registered_cnt_;
 }
@@ -223,7 +234,7 @@ read_string_best_effort(EpollScheduler &sched, AsyncFile &file) {
   co_return {std::move(s), hup};
 }
 
-// May return a partially read string if the EPOLLRDHUP is received.
+// May return a partially read string if the a hup event is received.
 inline Task<IOResult<std::string>> getline(EpollScheduler &sched,
                                            AsyncFileStream &f,
                                            std::string_view delim = "\n") {
@@ -231,7 +242,8 @@ inline Task<IOResult<std::string>> getline(EpollScheduler &sched,
   while (!s.ends_with(delim)) {
     int ch = getc(f);
     if (ch == EOF && errno == EAGAIN) {
-      auto ev = co_await wait_file_event(sched, f, EPOLLIN | EPOLLRDHUP);
+      auto ev =
+          co_await wait_file_event(sched, f, EPOLLIN | EPOLLRDHUP | EPOLLHUP);
       if (!(ev & EPOLLIN)) {
         co_return {.result = std::move(s), .hup = true};
       }
@@ -289,7 +301,7 @@ print(EpollScheduler &sched, AsyncFileStream &f, std::string_view sv) {
   co_return {.result = len};
 }
 
-inline void fflush(AsyncFileStream &f) {
+inline void flush(AsyncFileStream &f) {
   CHECK_SYSCALL(fflush(static_cast<FILE *>(f)));
 }
 

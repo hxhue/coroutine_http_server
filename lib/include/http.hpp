@@ -231,6 +231,10 @@ struct HTTPRequest {
     clear();
 
     auto line = co_await getline(sched, f, "\r\n"sv);
+
+    // DEBUG() << "HTTPRequest::read_from gets: " << escape(line.result)
+    //         << std::endl;
+
     while (!line.result.empty() && std::isspace(line.result.back())) {
       line.result.pop_back();
     }
@@ -551,7 +555,7 @@ struct HTTPRouter {
     }
     // Check uri.
     if (!uri.starts_with('/')) {
-      throw std::runtime_error("path should start with '/': "s + uri.data() +
+      throw std::runtime_error("path should start with '/': "s + escape(uri) +
                                "\n" + SOURCE_LOCATION());
     }
     // Remove ?param=value
