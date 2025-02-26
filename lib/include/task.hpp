@@ -151,7 +151,13 @@ struct [[nodiscard("maybe co_await this task?")]] Task {
 
   // Task is the owner of the coroutine handle and should not be copied.
   Task(Task const &) = delete;
-  Task(Task &&) = default;
+
+  Task(Task &&other) : coro_(other.coro_) { other.coro_ = nullptr; }
+
+  Task &operator=(Task other) {
+    swap(*this, other);
+    return *this;
+  }
 
   inline ~Task();
 
@@ -364,11 +370,14 @@ template <typename T> Promise<T>::~Promise() {
 }
 
 template <typename T, typename P> Task<T, P>::~Task() {
-  if (!coro_.done()) {
+  if (coro_ && !coro_.done()) {
     // DEBUG() << "Task canceled: " << coro_.address() << "\n";
   }
-  // DEBUG() << "destroying " << coro_.address() << "\n";
-  coro_.destroy();
+  if (coro_) {
+    // DEBUG() << "destroying " << coro_.address() << "\n";
+    coro_.destroy();
+    coro_ = nullptr;
+  }
   // auto &sched = Scheduler::get();
   // if (sched.ready_coros_.contains(coro_)) {
   //   sched.ready_coros_.erase(coro_);
