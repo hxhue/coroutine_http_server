@@ -104,7 +104,17 @@ git submodule add https://github.com/google/googletest.git extern/googletest
 git submodule update --init --recursive
 ```
 
-Install `liburing` by `sudo apt install liburing-dev`.
+> [!CAUTION]
+> **You should run `git submodule add` at the root of the project's workspace**.
+
+Second, download this dependency (this library translates http status codes to strings):
+
+```bash
+git submodule add https://github.com/j-ulrich/http-status-codes-cpp.git extern/http_status_code
+git submodule update --init --recursive
+```
+
+<!-- Install `liburing` by `sudo apt install liburing-dev`. -->
 
 Then run cmake commands to build the project.
 

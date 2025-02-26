@@ -115,4 +115,85 @@ public:
 private:
   Func callback;
 };
+
+namespace cmp {
+struct CaseInsensitiveLess {
+  using is_transparent = void;
+
+  bool operator()(std::string_view a, std::string_view b) const {
+    auto i = a.begin();
+    auto j = b.begin();
+    while (i != a.end() && j != b.end()) {
+      auto c1 = std::tolower((unsigned char)(*i));
+      auto c2 = std::tolower((unsigned char)(*j));
+      if (c1 != c2) {
+        return c1 < c2;
+      }
+      ++i, ++j;
+    }
+    return i == a.end() && j != b.end();
+  }
+};
+
+struct CaseInsensitiveHash {
+  using is_transparent = void;
+
+  std::size_t operator()(const std::string &s) const {
+    std::size_t hash = 0;
+    for (char ch : s) {
+      hash = hash * 31 + std::tolower(static_cast<unsigned char>(ch));
+    }
+    return hash;
+  }
+
+  std::size_t operator()(std::string_view s) const {
+    std::size_t hash = 0;
+    for (char ch : s) {
+      hash = hash * 31 + std::tolower(static_cast<unsigned char>(ch));
+    }
+    return hash;
+  }
+};
+struct CaseInsensitiveEqual {
+  using is_transparent = void;
+
+  bool operator()(std::string_view a, std::string_view b) const {
+    auto i = a.begin();
+    auto j = b.begin();
+    while (i != a.end() && j != b.end()) {
+      auto c1 = std::tolower((unsigned char)(*i));
+      auto c2 = std::tolower((unsigned char)(*j));
+      if (c1 != c2) {
+        return false;
+      }
+      ++i, ++j;
+    }
+    return i == a.end() && j == b.end();
+  }
+};
+
+struct CaseSensitiveLess {
+  using is_transparent = void;
+
+  bool operator()(std::string_view a, std::string_view b) const {
+    return a < b;
+  }
+};
+
+struct CaseSensitiveEqual {
+  using is_transparent = void;
+
+  bool operator()(std::string_view a, std::string_view b) const {
+    return a == b;
+  }
+};
+
+struct CaseSensitiveHash {
+  using is_transparent = void;
+
+  std::size_t operator()(std::string_view a) const {
+    return std::hash<std::string_view>{}(a);
+  }
+};
+} // namespace cmp
 } // namespace coro

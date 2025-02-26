@@ -1,6 +1,5 @@
 #pragma once
 
-#include <exception>
 #include <fcntl.h>
 #include <memory>
 #include <stdexcept>

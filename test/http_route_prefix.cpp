@@ -6,18 +6,18 @@ TEST(HTTPRouterTest, SimpleRoute) {
   using namespace coro;
   HTTPRouter router;
 
-  router.route(HTTPMethod::GET, "/hello",
-               [](HTTPRequest) -> Task<HTTPResponse> {
-                 HTTPResponse res{
-                     .status = 200,
-                     .headers =
-                         {
-                             {"Content-Type", "text/html"},
-                         },
-                     .body = R"(<h1>Hello, world!</h1>)",
-                 };
-                 co_return res;
-               });
+  router.route_prefix(HTTPMethod::GET, "/hello",
+                      [](HTTPRequest) -> Task<HTTPResponse> {
+                        HTTPResponse res{
+                            .status = 200,
+                            .headers =
+                                {
+                                    {"Content-Type", "text/html"},
+                                },
+                            .body = R"(<h1>Hello, world!</h1>)",
+                        };
+                        co_return res;
+                      });
 
   auto handler = router.find_route(HTTPMethod::GET, "/hello");
   ASSERT_NE(handler, nullptr);
@@ -38,8 +38,8 @@ TEST(HTTPRouterTest, TwoRoutes) {
   auto f1 = [](HTTPRequest) -> Task<HTTPResponse> { co_return HTTPResponse{}; };
   auto f2 = [](HTTPRequest) -> Task<HTTPResponse> { co_return HTTPResponse{}; };
 
-  router.route(HTTPMethod::GET, "/hello", f1);
-  router.route(HTTPMethod::POST, "/hello/world", f2);
+  router.route_prefix(HTTPMethod::GET, "/hello", f1);
+  router.route_prefix(HTTPMethod::POST, "/hello/world", f2);
 
   // 测试 GET /hello
   auto handler1 = router.find_route(HTTPMethod::GET, "/hello");
@@ -65,8 +65,8 @@ TEST(HTTPRouterTest, RootRoute) {
   auto f1 = [](HTTPRequest) -> Task<HTTPResponse> { co_return HTTPResponse{}; };
   auto f2 = [](HTTPRequest) -> Task<HTTPResponse> { co_return HTTPResponse{}; };
 
-  router.route(HTTPMethod::ANY, "/", f1);
-  router.route(HTTPMethod::GET, "/hello", f2);
+  router.route_prefix(HTTPMethod::ANY, "/", f1);
+  router.route_prefix(HTTPMethod::GET, "/hello", f2);
 
   auto handler1 = router.find_route(HTTPMethod::GET, "/hello");
   ASSERT_TRUE(handler1.target<decltype(f2)>());
@@ -83,9 +83,9 @@ TEST(HTTPRouterTest, AnyMethodRoute) {
   auto f2 = [](HTTPRequest) -> Task<HTTPResponse> { co_return HTTPResponse{}; };
   auto f3 = [](HTTPRequest) -> Task<HTTPResponse> { co_return HTTPResponse{}; };
 
-  router.route(HTTPMethod::ANY, "/hello", f1);
-  router.route(HTTPMethod::GET, "/hello", f2);
-  router.route(HTTPMethod::ANY, "/hello/tom", f3);
+  router.route_prefix(HTTPMethod::ANY, "/hello", f1);
+  router.route_prefix(HTTPMethod::GET, "/hello", f2);
+  router.route_prefix(HTTPMethod::ANY, "/hello/tom", f3);
 
   // 测试 GET /hello
   auto handler1 = router.find_route(HTTPMethod::GET, "/hello");
@@ -115,7 +115,7 @@ TEST(HTTPRouterTest, QueryParametersRoute) {
 
   auto f1 = [](HTTPRequest) -> Task<HTTPResponse> { co_return HTTPResponse{}; };
 
-  router.route(HTTPMethod::GET, "/hello/tom", f1);
+  router.route_prefix(HTTPMethod::GET, "/hello/tom", f1);
 
   // 测试 GET /hello/tom?from=alice
   auto handler1 = router.find_route(HTTPMethod::GET, "/hello/tom?from=alice");
@@ -137,8 +137,8 @@ TEST(HTTPRouterTest, PrefixMatchingRoute) {
   auto f1 = [](HTTPRequest) -> Task<HTTPResponse> { co_return HTTPResponse{}; };
   auto f2 = [](HTTPRequest) -> Task<HTTPResponse> { co_return HTTPResponse{}; };
 
-  router.route(HTTPMethod::GET, "/hello", f1);
-  router.route(HTTPMethod::GET, "/hello/world", f2);
+  router.route_prefix(HTTPMethod::GET, "/hello", f1);
+  router.route_prefix(HTTPMethod::GET, "/hello/world", f2);
 
   // 测试 GET /hello/world (具体匹配)
   auto handler1 = router.find_route(HTTPMethod::GET, "/hello/world");
@@ -163,7 +163,7 @@ TEST(HTTPRouterTest, NoRouteFound) {
 
   auto f1 = [](HTTPRequest) -> Task<HTTPResponse> { co_return HTTPResponse{}; };
 
-  router.route(HTTPMethod::GET, "/hello", f1);
+  router.route_prefix(HTTPMethod::GET, "/hello", f1);
 
   // 测试 GET /hi (未注册)
   auto handler1 = router.find_route(HTTPMethod::GET, "/hi");

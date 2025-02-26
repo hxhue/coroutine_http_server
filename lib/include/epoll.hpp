@@ -249,7 +249,7 @@ inline Task<IOResult<std::string>> getline(EpollScheduler &sched,
 
 // Returns how many bytes are read.
 inline Task<IOResult<std::size_t>>
-read(EpollScheduler &sched, AsyncFileStream &f, std::span<char> buf) {
+read_buffer(EpollScheduler &sched, AsyncFileStream &f, std::span<char> buf) {
   std::size_t i = 0;
   while (i < buf.size()) {
     int ch = getc(f);
@@ -271,7 +271,7 @@ read(EpollScheduler &sched, AsyncFileStream &f, std::span<char> buf) {
 // May partially write a string if the EPOLLHUP is received.
 // Returns the length of the written string.
 inline Task<IOResult<std::size_t>>
-fputs(EpollScheduler &sched, AsyncFileStream &f, std::string_view sv) {
+print(EpollScheduler &sched, AsyncFileStream &f, std::string_view sv) {
   std::size_t len = 0;
   for (char ch : sv) {
     auto res = putc(ch, f);

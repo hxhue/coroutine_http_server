@@ -32,9 +32,13 @@ struct AsyncLoop {
     }
   }
 
-  operator TimedScheduler &() { return timed_sched_; }
+  TimedScheduler &get_timed_scheduler() { return timed_sched_; }
 
-  operator EpollScheduler &() { return epoll_sched_; }
+  EpollScheduler &get_epoll_scheduler() { return epoll_sched_; }
+
+  operator TimedScheduler &() { return get_timed_scheduler(); }
+
+  operator EpollScheduler &() { return get_epoll_scheduler(); }
 
 private:
   TimedScheduler timed_sched_;
@@ -45,6 +49,8 @@ AsyncLoop loop;
 AsyncFileStream ain(dup_stdin(), "r");
 AsyncFileStream aout(dup_stdout(), "w");
 AsyncFileStream aerr(dup_stdin(), "w");
+
+constexpr int MAX_PENDING_CONNECTIONS = 128;
 
 Task<> amain() {
   using namespace std::literals;
@@ -70,47 +76,42 @@ Task<> amain() {
   HTTPResponse response;
   co_await response.read_from(loop, client);
 
-  co_await fputs(loop, aout, std::format("Status: {}\n\n", response.status));
+  co_await print(loop, aout, std::format("Status: {}\n\n", response.status));
   for (auto const &[k, v] : response.headers) {
-    co_await fputs(loop, aout, std::format("{}: {}\n", k, v));
+    co_await print(loop, aout, std::format("{}: {}\n", k, v));
   }
-  co_await fputs(loop, aout, std::format("\n{}", response.body));
+  co_await print(loop, aout, std::format("\n{}", response.body));
   co_return;
 }
 
 int main() {
+  using namespace std::literals;
+
+  /////////////////// Set up routes ///////////////////
   HTTPRouter router;
-  router.route(HTTPMethod::GET, "/home",
-               [](HTTPRequest req) -> Task<HTTPResponse> {
-                 HTTPResponse res;
-                 res.status = 200;
-                 res.headers["Content-Type"] = "text/html";
-                 res.body = "<h1>Hello, World!</h1>";
-                 co_return res;
-               });
-  router.route(HTTPMethod::GET, "/", [](HTTPRequest req) -> Task<HTTPResponse> {
-    HTTPResponse res;
-    res.status = 302;
-    res.headers["Location"] = "/home";
-    co_return res;
-  });
+  router.route_prefix(HTTPMethod::GET, "/home",
+                      [](HTTPRequest req) -> Task<HTTPResponse> {
+                        HTTPResponse res;
+                        res.status = 200;
+                        res.headers["Content-Type"] = "text/html";
+                        res.body = "<h1>Hello, World!</h1>";
+                        co_return res;
+                      });
+  router.route_prefix(HTTPMethod::GET, "/",
+                      [](HTTPRequest req) -> Task<HTTPResponse> {
+                        HTTPResponse res;
+                        res.status = 302;
+                        res.headers["Location"] = "/home";
+                        co_return res;
+                      });
 
-  // const char *host = "baidu.com";
-  // std::uint16_t port = 80;
-  // auto saddr = socket_address(ip_address(host), port);
+  /////////////////// Create a TCP server ///////////////////
+  int server_socket;
+  struct sockaddr_in server_addr;
 
-  // auto server_sock = create_tcp_socket(AF_INET);
-  // // auto saddr = socket_address(ip_address("0.0.0.0"), 8080);
-  // auto saddr = socket_address(IpAddress{in_addr{INADDR_ANY}}, 8080);
-
-  /////////////////////////////////////////////////////////////
-
-  int server_socket, client_socket;
-  struct sockaddr_in server_addr, client_addr;
-  socklen_t client_addr_len = sizeof(client_addr);
-
-  std::uint16_t port = 8080;
-
+  const std::uint16_t min_port = 9000;
+  const std::uint16_t max_port = min_port + 200;
+  std::uint16_t port = min_port;
   while (true) {
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket < 0) {
@@ -120,65 +121,68 @@ int main() {
 
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY; // 监听所有网络接口
-
-    server_addr.sin_port = htons(port); // 监听端口
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(port); // !!!
 
     if (bind(server_socket, (struct sockaddr *)&server_addr,
              sizeof(server_addr)) < 0) {
-      std::cerr << "Failed to bind socket to port " << port << "\n";
-      close(server_socket);
-      // return 1;
-      port++;
+      CHECK_SYSCALL(close(server_socket));
+      if (++port > max_port) {
+        std::cerr << std::format("Failed to bind socket in port range {}-{}",
+                                 min_port, max_port)
+                  << std::endl;
+      }
     } else {
       break;
     }
   }
 
-  if (listen(server_socket, 5) < 0) {
-    std::cerr << "Failed to listen on socket\n";
-    close(server_socket);
-    return 1;
+  if (listen(server_socket, MAX_PENDING_CONNECTIONS) < 0) {
+    CHECK_SYSCALL(close(server_socket));
+    THROW_SYSCALL("Failed to listen on socket");
   }
+
+  AsyncFile server_sock{server_socket};
 
   std::cout << "Server is listening on port " << port << "...\n";
 
-  while (true) {
-    client_socket = accept(server_socket, (struct sockaddr *)&client_addr,
-                           &client_addr_len);
-    if (client_socket < 0) {
-      std::cerr << "Failed to accept client connection\n";
-      continue;
-    }
+  /////////////////// Create the entrypoint task ///////////////////
+  auto task = [](AsyncFile &server_sock, HTTPRouter &router) -> Task<> {
+    while (true) {
+      struct sockaddr_in client_addr;
+      socklen_t client_addr_len = sizeof(client_addr);
 
-    char client_ip[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
-    std::cout << "Accepted connection from " << client_ip << ":"
-              << ntohs(client_addr.sin_port) << "\n";
+      auto client_sock_temp = co_await socket_accept(
+          loop, server_sock, (struct sockaddr *)&client_addr, &client_addr_len);
+      AsyncFileStream client_stream{std::move(client_sock_temp), "r+"};
 
-    // 处理客户端请求
+      // TODO: we need a co_spawn and put all those logic elsewhere.
+      char client_ip[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+      co_await print(loop, aout,
+                     std::format("Accepted connection from {}:{}\n", client_ip,
+                                 ntohs(client_addr.sin_port)));
 
-    auto t = [](auto client_socket, HTTPRouter &router) -> Task<> {
-      AsyncFileStream f{AsyncFile{client_socket}, "r+"};
       HTTPRequest req;
-      co_await req.read_from(loop, f);
-
-      // co_await req.write_to(loop, aout);
+      co_await req.read_from(loop, client_stream);
 
       auto r = router.find_route(req.method, req.uri);
       if (r == nullptr) {
-        DEBUG() << "cannot find route to [" << req.method << " " << req.uri
-                << "]";
+        co_await print(
+            loop, aout,
+            std::format("cannot find route to [{} {}]", req.method, req.uri));
+
       } else {
         auto res = co_await r(req);
-        co_await res.write_to(loop, f);
+        co_await res.write_to(loop, client_stream);
+        co_await res.write_to(loop, aout);
+        co_await print(loop, aout, "\n"sv);
       }
-    }(client_socket, router);
+    }
+  }(server_sock, router);
 
-    run_task(loop, t);
-    t.result(); // Check if there's an exception.
-  }
+  run_task(loop, task);
+  task.result(); // Check exception.
 
-  close(server_socket);
   return 0;
 }

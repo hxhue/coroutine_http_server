@@ -1,6 +1,7 @@
 #pragma once
 
 #include <arpa/inet.h>
+#include <cstdio>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -8,6 +9,7 @@
 #include <sys/un.h>
 #include <variant>
 
+#include "aio.hpp"
 #include "epoll.hpp"
 #include "utility.hpp"
 
@@ -146,5 +148,16 @@ inline Task<AsyncFile> create_tcp_client(EpollScheduler &sched,
   auto sock = create_tcp_socket(addr.addr_.ss_family);
   co_await socket_connect(sched, sock, addr);
   co_return sock;
+}
+
+inline Task<AsyncFile> socket_accept(EpollScheduler &sched, AsyncFile &sock,
+                                     struct sockaddr *sockaddr,
+                                     socklen_t *socklen) {
+  // Assume sock already has flag O_NONBLOCKING.
+  co_await wait_file_event(sched, sock, EPOLLIN);
+  // Now accept cannot block.
+  auto res = CHECK_SYSCALL(accept4(sock.fd_, sockaddr, socklen, SOCK_NONBLOCK));
+  // SOCK_NONBLOCK saves us one more syscall (fcntl).
+  co_return AsyncFile{res, false};
 }
 } // namespace coro
