@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10.0)
-project(hello LANGUAGES CXX)
+project(coro LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 
@@ -15,5 +15,5 @@ add_subdirectory(test)
 # Examples.
 add_subdirectory(example)
 
-add_executable(hello main.cpp)
-target_link_libraries(hello PRIVATE coro)
+add_executable(server main.cpp)
+target_link_libraries(server PRIVATE coro)

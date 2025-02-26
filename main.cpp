@@ -151,37 +151,46 @@ int main() {
       struct sockaddr_in client_addr;
       socklen_t client_addr_len = sizeof(client_addr);
 
-      auto client_sock_temp = co_await socket_accept(
+      auto client_sock = co_await socket_accept(
           loop, server_sock, (struct sockaddr *)&client_addr, &client_addr_len);
-      AsyncFileStream client_stream{std::move(client_sock_temp), "r+"};
 
-      // TODO: we need a co_spawn and put all those logic elsewhere.
-      char client_ip[INET_ADDRSTRLEN];
-      inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
-      co_await print(loop, aout,
-                     std::format("Accepted connection from {}:{}\n", client_ip,
-                                 ntohs(client_addr.sin_port)));
+      auto handle_req = [](struct sockaddr_in client_addr,
+                           socklen_t client_addr_len, AsyncFile client_sock,
+                           HTTPRouter &router) -> Task<> {
+        AsyncFileStream client_stream{std::move(client_sock), "r+"};
 
-      HTTPRequest req;
-      co_await req.read_from(loop, client_stream);
-      co_await req.write_to(loop, aout, "> "sv);
-
-      auto r = router.find_route(req.method, req.uri);
-      if (r == nullptr) {
+        char client_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
         co_await print(loop, aout,
-                       std::format("!!! Cannot find route to [{} {}]\n",
-                                   req.method, req.uri));
-        HTTPResponse res;
-        res.headers["Content-Type"] = "application/json";
-        res.status = 404;
-        res.body = R"({ "message": "Cannot find a route." })"sv;
-        co_await res.write_to(loop, client_stream);
-      } else {
-        auto res = co_await r(req);
-        co_await res.write_to(loop, client_stream);
-        co_await res.write_to(loop, aout, "< "sv);
-        co_await print(loop, aout, "\n"sv);
-      }
+                       std::format("Accepted connection from {}:{}\n",
+                                   client_ip, ntohs(client_addr.sin_port)));
+
+        HTTPRequest req;
+        co_await req.read_from(loop, client_stream);
+        // co_await req.write_to(loop, aout, "> "sv);
+
+        auto r = router.find_route(req.method, req.uri);
+        if (r == nullptr) {
+          // co_await print(loop, aout,
+          //                std::format("!!! Cannot find a route to [{} {}]\n",
+          //                            req.method, req.uri));
+          HTTPResponse res;
+          res.headers["Content-Type"] = "application/json";
+          res.status = 404;
+          res.body = R"({ "message": "Cannot find a route." })"sv;
+          co_await res.write_to(loop, client_stream);
+        } else {
+          auto res = co_await r(req);
+          co_await res.write_to(loop, client_stream);
+          // co_await res.write_to(loop, aout, "< "sv);
+          // co_await print(loop, aout, "\n"sv);
+        }
+        co_await print(loop, aout,
+                       std::format("Bye {}:{}\n"sv, client_ip,
+                                   ntohs(client_addr.sin_port)));
+      }(client_addr, client_addr_len, std::move(client_sock), router);
+
+      spawn_task(handle_req);
     }
   }(server_sock, router);
 
