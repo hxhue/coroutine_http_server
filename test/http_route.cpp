@@ -2,7 +2,7 @@
 
 #include "http.hpp"
 
-TEST(HTTPRouterTest, SimpleRoute) {
+TEST(HTTPRoutePrefixTest, SimpleRoute) {
   using namespace coro;
   HTTPRouter router;
 
@@ -31,7 +31,7 @@ TEST(HTTPRouterTest, SimpleRoute) {
   EXPECT_EQ(response.body, R"(<h1>Hello, world!</h1>)");
 }
 
-TEST(HTTPRouterTest, TwoRoutes) {
+TEST(HTTPRoutePrefixTest, TwoRoutes) {
   using namespace coro;
   HTTPRouter router;
 
@@ -58,7 +58,7 @@ TEST(HTTPRouterTest, TwoRoutes) {
   ASSERT_EQ(handler4, nullptr);
 }
 
-TEST(HTTPRouterTest, RootRoute) {
+TEST(HTTPRoutePrefixTest, RootRoute) {
   using namespace coro;
   HTTPRouter router;
 
@@ -75,7 +75,7 @@ TEST(HTTPRouterTest, RootRoute) {
   ASSERT_TRUE(handler2.target<decltype(f1)>());
 }
 
-TEST(HTTPRouterTest, AnyMethodRoute) {
+TEST(HTTPRoutePrefixTest, AnyMethodRoute) {
   using namespace coro;
   HTTPRouter router;
 
@@ -109,7 +109,7 @@ TEST(HTTPRouterTest, AnyMethodRoute) {
   ASSERT_TRUE(handler5.target<decltype(f2)>());
 }
 
-TEST(HTTPRouterTest, QueryParametersRoute) {
+TEST(HTTPRoutePrefixTest, QueryParametersRoute) {
   using namespace coro;
   HTTPRouter router;
 
@@ -130,7 +130,7 @@ TEST(HTTPRouterTest, QueryParametersRoute) {
   ASSERT_TRUE(handler2.target<decltype(f1)>());
 }
 
-TEST(HTTPRouterTest, PrefixMatchingRoute) {
+TEST(HTTPRoutePrefixTest, PrefixMatchingRoute) {
   using namespace coro;
   HTTPRouter router;
 
@@ -157,7 +157,7 @@ TEST(HTTPRouterTest, PrefixMatchingRoute) {
   ASSERT_EQ(handler4, nullptr);
 }
 
-TEST(HTTPRouterTest, NoRouteFound) {
+TEST(HTTPRoutePrefixTest, NoRouteFound) {
   using namespace coro;
   HTTPRouter router;
 
@@ -176,4 +176,61 @@ TEST(HTTPRouterTest, NoRouteFound) {
   // 测试 POST /hello/world (未注册)
   auto handler3 = router.find_route(HTTPMethod::POST, "/hello/world");
   ASSERT_EQ(handler3, nullptr);
+}
+
+TEST(HTTPRouteTest, ExactMatch) {
+  using namespace coro;
+  HTTPRouter router;
+
+  auto f1 = [](HTTPRequest) -> Task<HTTPResponse> { co_return HTTPResponse{}; };
+
+  router.route(HTTPMethod::GET, "/hello", f1);
+
+  // 测试 GET /hello/world (未注册)
+  auto handler3 = router.find_route(HTTPMethod::GET, "/hello/world");
+  ASSERT_EQ(handler3, nullptr);
+
+  router.route_prefix(HTTPMethod::ANY, "/hello", f1);
+
+  // Now "/hello/world" is registered.
+  auto handler4 = router.find_route(HTTPMethod::GET, "/hello/world");
+  ASSERT_TRUE(handler4.target<decltype(f1)>());
+}
+
+TEST(HTTPRouteTest, ExactMatchHappensFirst) {
+  using namespace coro;
+  using namespace std::literals;
+
+  HTTPRouter router;
+  auto f1 = [](HTTPRequest req) -> Task<HTTPResponse> {
+    HTTPResponse res;
+    res.status = 302;
+    res.headers["Location"] = "/home"sv;
+    co_return res;
+  };
+  auto f2 = [](HTTPRequest req) -> Task<HTTPResponse> {
+    HTTPResponse res;
+    res.status = 200;
+    res.headers["Content-Type"] = "text/html"sv;
+    res.body = "<h1>Hello, World!</h1>"sv;
+    co_return res;
+  };
+  auto f3 = [](HTTPRequest req) -> Task<HTTPResponse> {
+    HTTPResponse res;
+    res.status = 404;
+    res.body = "<h1>The page you requested is not found!</h1>"sv;
+    co_return res;
+  };
+
+  router.route(HTTPMethod::GET, "/", f1);
+  router.route(HTTPMethod::GET, "/home/"sv, f2);
+  router.route_prefix(HTTPMethod::GET, "/", f3);
+
+  auto h1 = router.find_route("GET", "/");
+  auto h2 = router.find_route("GET", "/home");
+  auto h3 = router.find_route("GET", "/not-found");
+
+  ASSERT_TRUE(h1.target<decltype(f1)>());
+  ASSERT_TRUE(h2.target<decltype(f2)>());
+  ASSERT_TRUE(h3.target<decltype(f3)>());
 }

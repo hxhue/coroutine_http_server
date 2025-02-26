@@ -165,7 +165,8 @@ struct HTTPHeaderBody {
   }
 
   static Task<> write_to(EpollScheduler &sched, AsyncFileStream &f,
-                         HTTPHeaders const &headers, std::string const &body) {
+                         HTTPHeaders const &headers, std::string const &body,
+                         std::string_view line_start = "") {
     using namespace std::literals;
 
     std::string s;
@@ -175,6 +176,7 @@ struct HTTPHeaderBody {
       if (cmp::CaseInsensitiveEqual{}(k, "Content-Length")) {
         continue;
       }
+      s += line_start;
       s += k;
       s += ": "sv;
       s += v;
@@ -183,12 +185,14 @@ struct HTTPHeaderBody {
 
     // Write the Content-Length header if there is a body
     if (!body.empty()) {
+      s += line_start;
       s += "Content-Length: "sv;
       s += std::to_string(body.size());
       s += "\r\n"sv;
     }
 
     // End of headers
+    s += line_start;
     s += "\r\n"sv;
 
     // Send headers
@@ -199,9 +203,24 @@ struct HTTPHeaderBody {
 
     // Send body if it exists
     if (!body.empty()) {
-      res = co_await print(sched, f, body);
-      if (res.hup) {
-        THROW_SYSCALL("write-end hung up");
+      if (line_start == ""sv) {
+        res = co_await print(sched, f, body);
+        if (res.hup) {
+          THROW_SYSCALL("write-end hung up");
+        }
+      } else {
+        // TODO: is there a problem?
+        for (auto line : std::views::split(body, '\n')) {
+          auto sv = std::string_view{line};
+          res = co_await print(sched, f, sv);
+          if (res.hup) {
+            THROW_SYSCALL("write-end hung up");
+          }
+          res = co_await print(sched, f, "\n"sv);
+          if (res.hup) {
+            THROW_SYSCALL("write-end hung up");
+          }
+        }
       }
     }
   }
@@ -231,15 +250,17 @@ struct HTTPRequest {
     co_await HTTPHeaderBody::read_from(sched, f, headers, body);
   }
 
-  Task<> write_to(EpollScheduler &sched, AsyncFileStream &f) const {
+  Task<> write_to(EpollScheduler &sched, AsyncFileStream &f,
+                  std::string_view line_start = "") const {
     using namespace std::literals;
     std::string s;
+    s += line_start;
     s += method.empty() ? "<empty>"sv : method;
     s += " "sv;
     s += uri.empty() ? "<empty>"sv : uri;
     s += " HTTP/1.1\r\n"sv;
     co_await print(sched, f, s);
-    co_await HTTPHeaderBody::write_to(sched, f, headers, body);
+    co_await HTTPHeaderBody::write_to(sched, f, headers, body, line_start);
   }
 
   auto to_tuple() const { return std::make_tuple(method, uri, headers, body); }
@@ -356,12 +377,13 @@ struct HTTPResponse {
     co_await HTTPHeaderBody::read_from(sched, f, headers, body);
   }
 
-  Task<> write_to(EpollScheduler &sched, AsyncFileStream &f) const {
+  Task<> write_to(EpollScheduler &sched, AsyncFileStream &f,
+                  std::string_view line_start = "") const {
     using namespace std::literals;
-    co_await print(
-        sched, f,
-        std::format("HTTP/1.1 {} {}\r\n", status, status_message(status)));
-    co_await HTTPHeaderBody::write_to(sched, f, headers, body);
+    co_await print(sched, f,
+                   std::format("{}HTTP/1.1 {} {}\r\n", line_start, status,
+                               status_message(status)));
+    co_await HTTPHeaderBody::write_to(sched, f, headers, body, line_start);
   }
 
   auto to_tuple() const { return std::make_tuple(status, headers, body); }
@@ -389,20 +411,53 @@ struct HTTPRouter {
     std::unordered_map<HTTPMethod, HTTPHandler> handlers; // May be empty.
   };
 
-  // Forward to the next route().
-  void route_prefix(std::string_view method, std::string_view uri,
-                    HTTPHandler handler /* to be moved */) {
+  void route(std::string_view method, std::string_view uri,
+             HTTPHandler const &handler) {
     using namespace std::literals;
     auto m = http_method(method);
     if (m == HTTPMethod::INVALID) {
       throw std::runtime_error("invalid HTTP method: "s + method.data() + "\n" +
                                SOURCE_LOCATION());
     }
-    route_prefix(method, uri, std::move(handler));
+    route(method, uri, handler);
+  }
+
+  void route(HTTPMethod method, std::string_view uri,
+             HTTPHandler const &handler) {
+    if (!uri.starts_with('/')) {
+      throw std::runtime_error(std::format(
+          "uri does not start with /: uri: {}\n{}", uri, SOURCE_LOCATION()));
+    }
+    // Remove ?param=value.
+    if (auto pos = uri.find('?'); pos != std::string_view::npos) {
+      uri = uri.substr(0, pos);
+    }
+    // //a/b// -> /a/b/
+    std::string s;
+    char last = '\0';
+    for (char ch : uri) {
+      if (last == '/' && ch == '/') {
+        continue;
+      }
+      s += ch;
+      last = ch;
+    }
+    exact_matches[s][method] = handler;
+  }
+
+  void route_prefix(std::string_view method, std::string_view uri,
+                    HTTPHandler const &handler) {
+    using namespace std::literals;
+    auto m = http_method(method);
+    if (m == HTTPMethod::INVALID) {
+      throw std::runtime_error("invalid HTTP method: "s + method.data() + "\n" +
+                               SOURCE_LOCATION());
+    }
+    route_prefix(method, uri, handler);
   }
 
   void route_prefix(HTTPMethod method, std::string_view uri,
-                    HTTPHandler handler /* to be moved */) {
+                    HTTPHandler const &handler) {
     using namespace std::literals;
     using TargetType = HTTPRequest::ParsedURI::TargetType;
     // Check method.
@@ -416,14 +471,9 @@ struct HTTPRouter {
       throw std::runtime_error("path should start with '/': "s + uri.data() +
                                "\n" + SOURCE_LOCATION());
     }
-    // No such need: std::views::split handles this for us.
-    // /a/b/ -> /a/b
-    // if (uri.ends_with('/')) {
-    //   uri.remove_suffix(1);
-    // }
     auto parsed_uri = HTTPRequest::ParsedURI::from(uri);
-    if (parsed_uri.type != TargetType::ORIGIN &&
-        parsed_uri.type != TargetType::ASTERISK) {
+    // TODO: asterisk
+    if (parsed_uri.type != TargetType::ORIGIN) {
       throw std::runtime_error("invalid path: "s + uri.data() + "\n" +
                                SOURCE_LOCATION());
     }
@@ -438,7 +488,7 @@ struct HTTPRouter {
     }
     // Insert the record.
     // DEBUG() << "inserting";
-    std::reference_wrapper<std::unique_ptr<Node>> cur = root;
+    std::reference_wrapper<std::unique_ptr<Node>> cur = trie;
     for (auto com : std::views::split(uri, "/"sv)) {
       auto sv = std::string_view{com};
       if (sv.empty()) {
@@ -454,7 +504,37 @@ struct HTTPRouter {
       cur = it->second;
     }
     // DEBUG() << "\n";
-    cur.get()->handlers[method] = std::move(handler);
+    cur.get()->handlers[method] = handler;
+  }
+
+  HTTPHandler find_route_exact(HTTPMethod m, std::string_view uri) const {
+    // Remove ?param=value.
+    if (auto pos = uri.find('?'); pos != std::string_view::npos) {
+      uri = uri.substr(0, pos);
+    }
+    // Build key.
+    std::string s;
+    char last = '\0';
+    for (char ch : uri) {
+      if (last == '/' && ch == '/') {
+        continue;
+      }
+      s += ch;
+      last = ch;
+    }
+    // Search.
+    auto it = exact_matches.find(uri);
+    if (it == exact_matches.end()) {
+      return nullptr;
+    }
+    auto jt = it->second.find(m);
+    if (jt == it->second.end()) {
+      jt = it->second.find(HTTPMethod::ANY);
+    }
+    if (jt == it->second.end()) {
+      return nullptr;
+    }
+    return jt->second;
   }
 
   HTTPHandler find_route(std::string_view method, std::string_view uri) const {
@@ -478,15 +558,28 @@ struct HTTPRouter {
     if (auto pos = uri.find('?')) {
       uri = uri.substr(0, pos);
     }
-    std::reference_wrapper<const std::unique_ptr<Node>> cur = root;
-    HTTPHandler h = nullptr;
-    // Try root.
+    // Try exact match first.
+    HTTPHandler h = find_route_exact(method, uri);
+    if (h) {
+      return h;
+    }
+    if (!uri.ends_with('/')) {
+      std::string uri2;
+      uri2 = uri;
+      uri2 += '/';
+      h = find_route_exact(method, uri2);
+    }
+    if (h) {
+      return h;
+    }
+    // Try prefix match.
+    std::reference_wrapper<const std::unique_ptr<Node>> cur = trie;
     auto jt = cur.get()->handlers.find(method);
     if (jt == cur.get()->handlers.end()) {
       jt = cur.get()->handlers.find(HTTPMethod::ANY);
     }
     if (jt != cur.get()->handlers.end()) {
-      h = jt->second; // Longest possible match.
+      h = jt->second;
     }
     // Try longer components.
     for (auto com : std::views::split(uri, "/"sv)) {
@@ -499,6 +592,7 @@ struct HTTPRouter {
         break;
       }
       cur = it->second;
+      // The same logic also applies to the root of trie.
       auto jt = cur.get()->handlers.find(method);
       if (jt == cur.get()->handlers.end()) {
         jt = cur.get()->handlers.find(HTTPMethod::ANY);
@@ -510,7 +604,10 @@ struct HTTPRouter {
     return h;
   }
 
-  std::unique_ptr<Node> root = std::make_unique<Node>();
+  std::unique_ptr<Node> trie = std::make_unique<Node>();
+  std::unordered_map<std::string, std::unordered_map<HTTPMethod, HTTPHandler>,
+                     cmp::CaseSensitiveHash, cmp::CaseSensitiveEqual>
+      exact_matches;
 };
 
 } // namespace coro

@@ -89,21 +89,20 @@ int main() {
 
   /////////////////// Set up routes ///////////////////
   HTTPRouter router;
-  router.route_prefix(HTTPMethod::GET, "/home",
-                      [](HTTPRequest req) -> Task<HTTPResponse> {
-                        HTTPResponse res;
-                        res.status = 200;
-                        res.headers["Content-Type"] = "text/html";
-                        res.body = "<h1>Hello, World!</h1>";
-                        co_return res;
-                      });
-  router.route_prefix(HTTPMethod::GET, "/",
-                      [](HTTPRequest req) -> Task<HTTPResponse> {
-                        HTTPResponse res;
-                        res.status = 302;
-                        res.headers["Location"] = "/home";
-                        co_return res;
-                      });
+  router.route(HTTPMethod::GET, "/", [](HTTPRequest req) -> Task<HTTPResponse> {
+    HTTPResponse res;
+    res.status = 302;
+    res.headers["Location"] = "/home/"sv;
+    co_return res;
+  });
+  router.route(HTTPMethod::GET, "/home/"sv,
+               [](HTTPRequest req) -> Task<HTTPResponse> {
+                 HTTPResponse res;
+                 res.status = 200;
+                 res.headers["Content-Type"] = "text/html"sv;
+                 res.body = "<h1>Hello, World!</h1>"sv;
+                 co_return res;
+               });
 
   /////////////////// Create a TCP server ///////////////////
   int server_socket;
@@ -165,17 +164,22 @@ int main() {
 
       HTTPRequest req;
       co_await req.read_from(loop, client_stream);
+      co_await req.write_to(loop, aout, "> "sv);
 
       auto r = router.find_route(req.method, req.uri);
       if (r == nullptr) {
-        co_await print(
-            loop, aout,
-            std::format("cannot find route to [{} {}]", req.method, req.uri));
-
+        co_await print(loop, aout,
+                       std::format("!!! Cannot find route to [{} {}]\n",
+                                   req.method, req.uri));
+        HTTPResponse res;
+        res.headers["Content-Type"] = "application/json";
+        res.status = 404;
+        res.body = R"({ "message": "Cannot find a route." })"sv;
+        co_await res.write_to(loop, client_stream);
       } else {
         auto res = co_await r(req);
         co_await res.write_to(loop, client_stream);
-        co_await res.write_to(loop, aout);
+        co_await res.write_to(loop, aout, "< "sv);
         co_await print(loop, aout, "\n"sv);
       }
     }

@@ -1,4 +1,4 @@
-set(TESTS await_task http_parse_uri http_route_prefix when_all when_any)
+set(TESTS await_task http_parse_uri http_route when_all when_any)
 
 foreach(t IN LISTS TESTS)
   add_executable(${t} ${t}.cpp)
