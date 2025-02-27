@@ -51,8 +51,14 @@ struct EpollScheduler {
       using namespace std::chrono;
       timeout = duration_cast<milliseconds>(*timeout_opt).count();
     }
-    struct epoll_event ebuf[16];
-    int res = CHECK_SYSCALL(epoll_wait(epoll_, ebuf, std::size(ebuf), timeout));
+    struct epoll_event ebuf[1024];
+    int res = epoll_wait(epoll_, ebuf, std::size(ebuf), timeout);
+    if (res == -1 && errno == EINTR) {
+      res = 0;
+    }
+    if (res == -1) {
+      THROW_SYSCALL("epoll_wait");
+    }
     for (int i = 0; i < res; i++) {
       auto &event = ebuf[i];
 
@@ -240,14 +246,18 @@ inline Task<IOResult<std::string>> getline(EpollScheduler &sched,
                                            std::string_view delim = "\n") {
   std::string s;
   while (!s.ends_with(delim)) {
+    errno = 0;
     int ch = getc(f);
     if (ch == EOF && errno == EAGAIN) {
-      auto ev =
-          co_await wait_file_event(sched, f, EPOLLIN | EPOLLRDHUP | EPOLLHUP);
+      auto ev = co_await wait_file_event(
+          sched, f, EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLET);
       if (!(ev & EPOLLIN)) {
         co_return {.result = std::move(s), .hup = true};
       }
       continue;
+    } else if (ch == EOF && errno == 0) {
+      // Someone set the EOF flag.
+      co_return {.result = std::move(s), .hup = true};
     } else if (ch == EOF) {
       THROW_SYSCALL("read (getc)");
     }
@@ -264,10 +274,11 @@ inline Task<IOResult<std::size_t>>
 read_buffer(EpollScheduler &sched, AsyncFileStream &f, std::span<char> buf) {
   std::size_t i = 0;
   while (i < buf.size()) {
+    errno = 0;
     int ch = getc(f);
     if (ch == EOF && errno == EAGAIN) {
-      auto ev =
-          co_await wait_file_event(sched, f, EPOLLIN | EPOLLRDHUP | EPOLLHUP);
+      auto ev = co_await wait_file_event(
+          sched, f, EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLET);
       if (!(ev & EPOLLIN)) {
         co_return {.result = i, .hup = true};
       }
@@ -286,9 +297,11 @@ inline Task<IOResult<std::size_t>>
 print(EpollScheduler &sched, AsyncFileStream &f, std::string_view sv) {
   std::size_t len = 0;
   for (char ch : sv) {
+    errno = 0;
     auto res = putc(ch, f);
     if (res == EOF && errno == EAGAIN) {
-      auto ev = co_await wait_file_event(sched, f, EPOLLOUT | EPOLLHUP);
+      auto ev =
+          co_await wait_file_event(sched, f, EPOLLOUT | EPOLLHUP | EPOLLET);
       if (!(ev & EPOLLOUT)) {
         co_return {.result = len, .hup = true};
       }

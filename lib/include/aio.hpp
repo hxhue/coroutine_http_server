@@ -116,4 +116,49 @@ template <typename T> struct IOResult {
   T result{};
   bool hup{}; // This means cannot write/read anymore.
 };
+
+struct FileDescriptor {
+  friend class FileStream;
+
+  explicit FileDescriptor(int fd) : fd(fd) {}
+
+  ~FileDescriptor() {
+    if (fd != -1) {
+      CHECK_SYSCALL(close(fd));
+      fd = -1;
+    }
+  }
+
+  FileDescriptor(FileDescriptor const &) = delete;
+  FileDescriptor(FileDescriptor &&other) : fd(std::exchange(other.fd, -1)) {}
+
+  [[nodiscard]] int release() { return std::exchange(fd, -1); }
+
+  int fd = -1;
+};
+
+struct FileStream {
+  FileStream(FileDescriptor fd, const char *mode) {
+    stream = fdopen(fd.fd, mode);
+    if (!stream) {
+      THROW_SYSCALL("fdopen");
+    }
+    fd.fd = -1;
+  }
+
+  ~FileStream() {
+    if (stream) {
+      if (EOF == fclose(stream)) {
+        THROW_SYSCALL("fclose");
+      }
+      stream = nullptr;
+    }
+  }
+
+  FileStream(FileStream const &) = delete;
+  FileStream(FileStream &&other)
+      : stream(std::exchange(other.stream, nullptr)) {}
+
+  FILE *stream = nullptr;
+};
 } // namespace coro

@@ -209,7 +209,6 @@ struct HTTPHeaderBody {
           THROW_SYSCALL("write-end hung up");
         }
       } else {
-        // TODO: is there a problem?
         for (auto line : std::views::split(body, '\n')) {
           auto sv = std::string_view{line};
           res = co_await print(sched, f, sv);
@@ -223,6 +222,31 @@ struct HTTPHeaderBody {
         }
       }
     }
+  }
+
+  static void append_string(std::string &s, HTTPHeaders const &headers,
+                            std::string const &body) {
+    using namespace std::literals;
+    for (auto const &[k, v] : headers) {
+      if (cmp::CaseInsensitiveEqual{}(k, "Content-Length")) {
+        continue;
+      }
+      s += k;
+      s += ": "sv;
+      s += v;
+      s += "\r\n"sv;
+    }
+
+    // Write the Content-Length header if there is a body
+    if (!body.empty()) {
+      s += "Content-Length: "sv;
+      s += std::to_string(body.size());
+      s += "\r\n"sv;
+    }
+
+    // End of headers
+    s += "\r\n"sv;
+    s += body;
   }
 };
 struct HTTPRequest {
@@ -252,6 +276,20 @@ struct HTTPRequest {
     }
 
     co_await HTTPHeaderBody::read_from(sched, f, headers, body);
+  }
+
+  void read_from(FILE *f) {
+    std::string s;
+    char buf[1024];
+    if (!fgets(buf, std::size(buf) - 1, f)) {
+      THROW_SYSCALL("fgets");
+    }
+    auto n = strlen(buf);
+    // TODO: read ""sv
+    // if (buf[n - 1] != '\n' || buf[n - 2] != '\r') {
+    //   auto n = strlen(buf);
+    //   //
+    // }
   }
 
   Task<> write_to(EpollScheduler &sched, AsyncFileStream &f,
@@ -388,6 +426,14 @@ struct HTTPResponse {
                    std::format("{}HTTP/1.1 {} {}\r\n", line_start, status,
                                status_message(status)));
     co_await HTTPHeaderBody::write_to(sched, f, headers, body, line_start);
+  }
+
+  std::string to_string() const {
+    using namespace std::literals;
+    std::string s;
+    s += std::format("HTTP/1.1 {} {}\r\n", status, status_message(status));
+    HTTPHeaderBody::append_string(s, headers, body);
+    return s;
   }
 
   auto to_tuple() const { return std::make_tuple(status, headers, body); }

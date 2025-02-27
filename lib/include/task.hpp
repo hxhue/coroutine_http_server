@@ -143,6 +143,21 @@ struct Promise : detail::promise::PromiseReturnYield<Promise<T>, T> {
   detail::promise::PromiseVariant<T> result_;
 };
 
+struct DetachedPromise : Promise<void> {
+  void return_void() {}
+
+  std::suspend_always initial_suspend() noexcept { return {}; }
+
+  std::suspend_never final_suspend() noexcept { return {}; }
+
+  // This kind of promise should not be used for throwable tasks.
+  void unhandled_exception() { throw; }
+
+  auto get_return_object() {
+    return std::coroutine_handle<DetachedPromise>::from_promise(*this);
+  }
+};
+
 template <typename T = void, typename P = Promise<T>>
 struct [[nodiscard("maybe co_await this task?")]] Task {
   using promise_type = P;
@@ -153,6 +168,8 @@ struct [[nodiscard("maybe co_await this task?")]] Task {
   Task(Task const &) = delete;
 
   Task(Task &&other) : coro_(other.coro_) { other.coro_ = nullptr; }
+
+  friend void swap(Task &a, Task &b) { std::swap(a.coro_, b.coro_); }
 
   Task &operator=(Task other) {
     swap(*this, other);
@@ -187,9 +204,11 @@ struct [[nodiscard("maybe co_await this task?")]] Task {
 
   auto operator co_await() const { return TaskAwaiter(coro_); }
 
-  std::coroutine_handle<promise_type> coro_{};
-
   decltype(auto) result() const { return coro_.promise().result(); }
+
+  auto release() { return std::exchange(coro_, nullptr); }
+
+  std::coroutine_handle<promise_type> coro_{};
 };
 
 struct ReturnPreviousAwaiter {
@@ -587,10 +606,5 @@ T run_task(Loop &loop, Task<T, P> const &t) {
   a.await_suspend(std::noop_coroutine()).resume();
   loop.run();
   return a.await_resume();
-}
-
-template <class T, class P> void spawn_task(Task<T, P> const &t) {
-  auto a = t.operator co_await();
-  a.await_suspend(std::noop_coroutine()).resume();
 }
 } // namespace coro

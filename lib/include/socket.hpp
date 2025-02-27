@@ -160,4 +160,11 @@ inline Task<AsyncFile> socket_accept(EpollScheduler &sched, AsyncFile &sock,
   // SOCK_NONBLOCK saves us one more syscall (fcntl).
   co_return AsyncFile{res, false};
 }
+
+inline FileDescriptor socket_accept_sync(int sockfd, struct sockaddr *sockaddr,
+                                         socklen_t *socklen) {
+  auto res = CHECK_SYSCALL(
+      accept4(sockfd, sockaddr, socklen, 0 /* no SOCK_NONBLOCK */));
+  return FileDescriptor{res};
+}
 } // namespace coro

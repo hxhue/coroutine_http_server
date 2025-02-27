@@ -2,9 +2,10 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cxxabi.h>
+#include <exception>
 #include <fcntl.h>
 #include <iostream>
-#include <list>
 #include <netinet/in.h>
 #include <sys/epoll.h>
 #include <termios.h>
@@ -56,47 +57,71 @@ Task<void> handle_request(struct sockaddr_in client_addr,
                           socklen_t client_addr_len, AsyncFile client_sock,
                           HTTPRouter &router) {
   using namespace std::literals;
-  AsyncFileStream client_stream{std::move(client_sock), "r+"};
 
-  char client_ip[INET_ADDRSTRLEN];
-  inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
-  // co_await print(loop, aout,
-  //                std::format("Accept {}:{} at fd {}\n", client_ip,
-  //                            ntohs(client_addr.sin_port),
-  //                            client_stream.af_.fd_));
+  try {
+    AsyncFileStream client_stream{std::move(client_sock), "r+"};
 
-  HTTPRequest req;
-  auto read_req = req.read_from(loop, client_stream);
-  co_await read_req;
-  // co_await req.write_to(loop, aout, "> "sv);
-
-  assert(read_req.coro_.done());
-
-  // if (!req.uri.starts_with('/')) {
-  //   co_await print(loop, aout, std::format("BUGGY REQ:\n"sv));
-  //   co_await req.write_to(loop, aout, "> "sv);
-  // }
-
-  auto r = router.find_route(req.method, req.uri);
-  if (r == nullptr) {
+    char client_ip[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
     // co_await print(loop, aout,
-    //                std::format("!!! Cannot find a route to [{} {}]\n",
-    //                            req.method, req.uri));
-    HTTPResponse res;
-    res.headers["Content-Type"] = "application/json";
-    res.status = 404;
-    res.body = R"({ "message": "Cannot find a route." })"sv;
-    co_await res.write_to(loop, client_stream);
-  } else {
-    auto res = co_await r(req);
-    co_await res.write_to(loop, client_stream);
-    // co_await res.write_to(loop, aout, "< "sv);
-    // co_await print(loop, aout, "\n"sv);
+    //                std::format("Accept {}:{} at fd {}\n", client_ip,
+    //                            ntohs(client_addr.sin_port),
+    //                            client_stream.af_.fd_));
+
+    HTTPRequest req;
+    auto read_req = req.read_from(loop, client_stream);
+    co_await read_req;
+    // co_await req.write_to(loop, aout, "> "sv);
+
+    assert(read_req.coro_.done());
+
+    // if (!req.uri.starts_with('/')) {
+    //   co_await print(loop, aout, std::format("BUGGY REQ:\n"sv));
+    //   co_await req.write_to(loop, aout, "> "sv);
+    // }
+
+    auto r = router.find_route(req.method, req.uri);
+    if (r == nullptr) {
+      // co_await print(loop, aout,
+      //                std::format("!!! Cannot find a route to [{} {}]\n",
+      //                            req.method, req.uri));
+      HTTPResponse res;
+      res.headers["Content-Type"] = "application/json";
+      res.status = 404;
+      res.body = R"({ "message": "Cannot find a route." })"sv;
+      co_await res.write_to(loop, client_stream);
+    } else {
+      auto res = co_await r(req);
+      co_await res.write_to(loop, client_stream);
+      // co_await res.write_to(loop, aout, "< "sv);
+      // co_await print(loop, aout, "\n"sv);
+    }
+    // flush(client_stream);
+    // co_await print(
+    //     loop, aout,
+    //     std::format("Bye {}:{}\n"sv, client_ip,
+    //     ntohs(client_addr.sin_port)));
+  } catch (std::exception &e) {
+    // std::cerr << e.what() << "\n";
   }
-  // flush(client_stream);
-  // co_await print(
-  //     loop, aout,
-  //     std::format("Bye {}:{}\n"sv, client_ip, ntohs(client_addr.sin_port)));
+}
+
+std::vector<Task<>> spawned_tasks;
+
+template <class T, class P> void spawn_task(Task<T, P> t) {
+  for (size_t i = 0; i < spawned_tasks.size();) {
+    if (spawned_tasks[i].coro_.done()) {
+      std::swap(spawned_tasks[i], spawned_tasks.back());
+      spawned_tasks.pop_back();
+    } else {
+      ++i;
+    }
+  }
+
+  auto a = t.operator co_await();
+  a.await_suspend(std::noop_coroutine()).resume();
+
+  spawned_tasks.push_back(std::move(t));
 }
 
 int main() {
@@ -162,31 +187,20 @@ int main() {
 
   /////////////////// Create the entrypoint task ///////////////////
   auto task = [](AsyncFile &server_sock, HTTPRouter &router) -> Task<> {
-    std::list<Task<>> spawned_tasks;
     while (true) {
-      // FIXME: tasks are spawned and destroyed.
-      // Remove finished tasks periodically.
-      // auto it = spawned_tasks.begin();
-      // while (it != spawned_tasks.end()) {
-      //   auto it2 = next(it);
-      //   if (it->coro_.done()) {
-      //     spawned_tasks.erase(it);
-      //   }
-      //   it = it2;
-      // }
-      // DEBUG() << "spawned count: " << spawned_tasks.size() << std::endl;
-
       struct sockaddr_in client_addr;
       socklen_t client_addr_len = sizeof(client_addr);
 
       auto client_sock = co_await socket_accept(
           loop, server_sock, (struct sockaddr *)&client_addr, &client_addr_len);
 
+      // DEBUG() << std::format("client fd: {}, spawned count: {}\n",
+      //                        client_sock.fd_, spawned_tasks.size());
+
       auto handler = handle_request(client_addr, client_addr_len,
                                     std::move(client_sock), router);
 
-      spawn_task(handler);
-      // spawned_tasks.push_back(std::move(handler));
+      spawn_task(std::move(handler));
     }
   }(server_sock, router);
 
