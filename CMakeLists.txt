@@ -14,6 +14,3 @@ add_subdirectory(test)
 
 # Examples.
 add_subdirectory(example)
-
-add_executable(server main.cpp)
-target_link_libraries(server PRIVATE coro)

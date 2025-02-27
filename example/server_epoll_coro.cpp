@@ -106,7 +106,7 @@ Task<void> handle_request(struct sockaddr_in client_addr,
   }
 }
 
-std::vector<Task<>> spawned_tasks;
+thread_local std::vector<Task<>> spawned_tasks;
 
 template <class T, class P> void spawn_task(Task<T, P> t) {
   for (size_t i = 0; i < spawned_tasks.size();) {

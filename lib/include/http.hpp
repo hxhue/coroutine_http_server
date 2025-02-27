@@ -279,17 +279,106 @@ struct HTTPRequest {
   }
 
   void read_from(FILE *f) {
+    using namespace std::literals;
     std::string s;
     char buf[1024];
-    if (!fgets(buf, std::size(buf) - 1, f)) {
-      THROW_SYSCALL("fgets");
+
+    // Read the first line (request line)
+    errno = 0;
+    if (!fgets(buf, sizeof(buf), f)) {
+      if (errno == 0) {
+        // somehow closed
+        throw std::runtime_error("The stream is closed?\n" + SOURCE_LOCATION());
+      } else {
+        THROW_SYSCALL("fgets");
+      }
     }
-    auto n = strlen(buf);
-    // TODO: read ""sv
-    // if (buf[n - 1] != '\n' || buf[n - 2] != '\r') {
-    //   auto n = strlen(buf);
-    //   //
-    // }
+    s = buf;
+    auto ensure_and_remove_crlf = [](std::string &s,
+                                     std::string const &src_loc) {
+      // Ensure that this line ends with "\r\n"
+      if (!s.ends_with('\n')) {
+        throw std::runtime_error("no \\n\n" + src_loc);
+      }
+      if (s.size() < 2 || s[s.size() - 2] != '\r') {
+        throw std::runtime_error("no \\r\\n\n" + src_loc);
+      }
+      // Now that we know s ends with "\r\n", we can remove them.
+      s.pop_back();
+      s.pop_back();
+    };
+    ensure_and_remove_crlf(s, SOURCE_LOCATION());
+
+    // Check if the request line ends with "HTTP/1.1"
+    if (!s.ends_with("HTTP/1.1")) {
+      throw std::runtime_error("invalid request: cannot find \"HTTP/1.1\"\n" +
+                               SOURCE_LOCATION());
+    }
+
+    // Parse the request line
+    std::stringstream ss(s);
+    ss >> method >> uri;
+
+    // Validate the HTTP method
+    if (http_method(method) == HTTPMethod::INVALID) {
+      throw std::runtime_error("invalid http method: " + method + "\n" +
+                               SOURCE_LOCATION());
+    }
+
+    // Read headers
+    while (true) {
+      errno = 0;
+      if (!fgets(buf, sizeof(buf), f)) {
+        if (errno == 0) {
+          throw std::runtime_error("The stream is closed?");
+        } else {
+          THROW_SYSCALL("fgets");
+        }
+      }
+      s = buf;
+
+      ensure_and_remove_crlf(s, SOURCE_LOCATION());
+
+      // Empty line indicates the end of headers
+      if (s.empty()) {
+        break;
+      }
+
+      // Parse header line
+      auto i = s.find(":");
+      if (i == std::string::npos) {
+        throw std::runtime_error("invalid response: cannot find \":\"\n" +
+                                 SOURCE_LOCATION());
+      }
+      auto field_name = s.substr(0, i);
+      std::size_t j = i + 1;
+      while (j < s.size() && std::isspace(s[j])) {
+        ++j;
+      }
+      auto field_value = s.substr(j);
+
+      // Validate field name characters
+      for (char ch : field_name) {
+        if (!std::isalnum(ch) && !"_-"sv.contains(ch)) {
+          throw std::runtime_error(
+              "invalid response: get field name " + escape(field_name) +
+              " and it contains illegal characters!\n" + SOURCE_LOCATION());
+        }
+      }
+
+      // Insert or assign the header
+      headers.insert_or_assign(field_name, field_value);
+    }
+
+    // Read body if Content-Length is present
+    if (auto p = headers.find("Content-Length"); p != headers.end()) {
+      auto len = std::stoi(p->second);
+      body.resize(len);
+      if (fread(body.data(), 1, len, f) != len) {
+        throw std::runtime_error("invalid response: premature EOF\n" +
+                                 SOURCE_LOCATION());
+      }
+    }
   }
 
   Task<> write_to(EpollScheduler &sched, AsyncFileStream &f,

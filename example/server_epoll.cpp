@@ -2,6 +2,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <fcntl.h>
 #include <iostream>
 #include <list>
@@ -25,38 +26,39 @@ void handle_request(struct sockaddr_in client_addr, socklen_t client_addr_len,
                     HTTPRouter &router) {
   using namespace std::literals;
 
-  auto sock = FileStream(std::move(client_sock), "r+");
+  try {
+    auto sock = FileStream(std::move(client_sock), "r+");
 
-  char client_ip[INET_ADDRSTRLEN];
-  inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+    char client_ip[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
 
-  // TODO: req from string / FILE*
-  HTTPRequest req;
-  auto read_req = req.read_from(loop, client_stream);
-  co_await read_req;
+    HTTPRequest req;
+    req.read_from(sock.stream);
 
-  assert(read_req.coro_.done());
+    // Hope there's no I/O in any route handler.
+    // I don't want the coroutine to be suspended.
+    auto r = router.find_route(req.method, req.uri);
+    HTTPResponse res;
+    if (r == nullptr) {
+      res.headers["Content-Type"] = "application/json";
+      res.status = 404;
+      res.body = R"({ "message": "Cannot find a route." })"sv;
+    } else {
+      auto h = r(req);
+      h.coro_.resume();
+      res = h.result();
+      // I have this assertion to make sure that the coroutine is completed.
+      assert(h.coro_.done());
+    }
 
-  // Hope there's no I/O in any route handler.
-  auto r = router.find_route(req.method, req.uri);
-  HTTPResponse res;
-  if (r == nullptr) {
-    res.headers["Content-Type"] = "application/json";
-    res.status = 404;
-    res.body = R"({ "message": "Cannot find a route." })"sv;
-  } else {
-    auto h = r(req);
-    h.coro_.resume();
-    auto res = h.result();
-    assert(h.coro_.done());
+    auto s = res.to_string();
+    if (EOF == fputs(s.c_str(), sock.stream)) {
+      THROW_SYSCALL("write (fputs)");
+    }
+    fflush(sock.stream);
+  } catch (std::exception &e) {
+    // std::cerr << e.what() << "\n";
   }
-
-  auto s = res.to_string();
-  auto n = fputs(s.c_str(), sock.stream);
-  if (n != s.size()) {
-    THROW_SYSCALL("partial write");
-  }
-  fflush(sock.stream);
 }
 
 int main() {

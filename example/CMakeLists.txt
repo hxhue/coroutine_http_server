@@ -1,4 +1,4 @@
-set(EXECUTABLES epoll_multiple_files)
+set(EXECUTABLES server_epoll_coro server_epoll)
 
 foreach(exe IN LISTS EXECUTABLES)
   add_executable(${exe} ${exe}.cpp)

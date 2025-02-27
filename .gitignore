@@ -1,3 +1,4 @@
-.cache
-build
-.vscode/settings.json
+/.cache
+/build
+/.vscode/settings.json
+/private
