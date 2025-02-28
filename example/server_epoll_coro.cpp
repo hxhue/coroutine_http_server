@@ -15,6 +15,7 @@
 #include "aio.hpp"
 #include "epoll.hpp"
 #include "http.hpp"
+#include "router.hpp"
 #include "socket.hpp"
 #include "task.hpp"
 #include "utility.hpp"
@@ -59,48 +60,26 @@ Task<void> handle_request(struct sockaddr_in client_addr,
   using namespace std::literals;
 
   try {
-    AsyncFileStream client_stream{std::move(client_sock), "r+"};
+    AsyncFileBuffer client_buffer{loop, std::move(client_sock)};
 
     char client_ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
-    // co_await print(loop, aout,
-    //                std::format("Accept {}:{} at fd {}\n", client_ip,
-    //                            ntohs(client_addr.sin_port),
-    //                            client_stream.af_.fd_));
 
     HTTPRequest req;
-    auto read_req = req.read_from(loop, client_stream);
-    co_await read_req;
-    // co_await req.write_to(loop, aout, "> "sv);
-
-    assert(read_req.coro_.done());
-
-    // if (!req.uri.starts_with('/')) {
-    //   co_await print(loop, aout, std::format("BUGGY REQ:\n"sv));
-    //   co_await req.write_to(loop, aout, "> "sv);
-    // }
+    co_await req.read_from(loop, client_buffer);
 
     auto r = router.find_route(req.method, req.uri);
     if (r == nullptr) {
-      // co_await print(loop, aout,
-      //                std::format("!!! Cannot find a route to [{} {}]\n",
-      //                            req.method, req.uri));
       HTTPResponse res;
       res.headers["Content-Type"] = "application/json";
       res.status = 404;
       res.body = R"({ "message": "Cannot find a route." })"sv;
-      co_await res.write_to(loop, client_stream);
+      co_await res.write_to(loop, client_buffer);
     } else {
       auto res = co_await r(req);
-      co_await res.write_to(loop, client_stream);
-      // co_await res.write_to(loop, aout, "< "sv);
-      // co_await print(loop, aout, "\n"sv);
+      co_await res.write_to(loop, client_buffer);
     }
-    // flush(client_stream);
-    // co_await print(
-    //     loop, aout,
-    //     std::format("Bye {}:{}\n"sv, client_ip,
-    //     ntohs(client_addr.sin_port)));
+    co_await client_buffer.flush();
   } catch (std::exception &e) {
     // std::cerr << e.what() << "\n";
   }
@@ -128,21 +107,7 @@ int main() {
   using namespace std::literals;
 
   /////////////////// Set up routes ///////////////////
-  HTTPRouter router;
-  router.route(HTTPMethod::GET, "/", [](HTTPRequest req) -> Task<HTTPResponse> {
-    HTTPResponse res;
-    res.status = 302;
-    res.headers["Location"] = "/home/"sv;
-    co_return res;
-  });
-  router.route(HTTPMethod::GET, "/home/"sv,
-               [](HTTPRequest req) -> Task<HTTPResponse> {
-                 HTTPResponse res;
-                 res.status = 200;
-                 res.headers["Content-Type"] = "text/html"sv;
-                 res.body = "<h1>Hello, World!</h1>"sv;
-                 co_return res;
-               });
+  HTTPRouter router = create_router();
 
   /////////////////// Create a TCP server ///////////////////
   int server_socket;

@@ -43,8 +43,8 @@ int main() {
         // s = co_await read_string(read_f);
 
         // Wait for two files.
-        auto var = co_await when_any(read_string_best_effort(epoll_sched, read_f),
-                                     read_string_best_effort(epoll_sched, file));
+        auto var = co_await when_any(read_string(epoll_sched, read_f),
+                                     read_string(epoll_sched, file));
         std::visit([&s](auto &&v) { s = std::move(v.result); }, var);
 
         // NOTE: var is moved.

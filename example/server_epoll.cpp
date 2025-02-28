@@ -5,16 +5,14 @@
 #include <exception>
 #include <fcntl.h>
 #include <iostream>
-#include <list>
 #include <netinet/in.h>
 #include <sys/epoll.h>
 #include <termios.h>
 #include <unistd.h>
-#include <vector>
 
 #include "aio.hpp"
-#include "epoll.hpp"
 #include "http.hpp"
+#include "router.hpp"
 #include "socket.hpp"
 #include "task.hpp"
 #include "utility.hpp"
@@ -65,21 +63,7 @@ int main() {
   using namespace std::literals;
 
   /////////////////// Set up routes ///////////////////
-  HTTPRouter router;
-  router.route(HTTPMethod::GET, "/", [](HTTPRequest req) -> Task<HTTPResponse> {
-    HTTPResponse res;
-    res.status = 302;
-    res.headers["Location"] = "/home/"sv;
-    co_return res;
-  });
-  router.route(HTTPMethod::GET, "/home/"sv,
-               [](HTTPRequest req) -> Task<HTTPResponse> {
-                 HTTPResponse res;
-                 res.status = 200;
-                 res.headers["Content-Type"] = "text/html"sv;
-                 res.body = "<h1>Hello, World!</h1>"sv;
-                 co_return res;
-               });
+  HTTPRouter router = create_router();
 
   /////////////////// Create a TCP server ///////////////////
   int server_socket;

@@ -164,6 +164,73 @@ struct HTTPHeaderBody {
     }
   }
 
+  static Task<> read_from(EpollScheduler &sched, AsyncFileBuffer &f,
+                          HTTPHeaders &headers, std::string &body) {
+    using namespace std::literals;
+
+    while (true) {
+      // auto line = co_await getline(sched, f, "\r\n"sv);
+      auto line = co_await f.getline("\r\n"sv);
+      if (!headers.empty() && line.empty()) {
+        break;
+      }
+      // The space after the colon is optional!
+      // See https://datatracker.ietf.org/doc/html/rfc7230#section-3.2
+      auto i = line.find(":"sv);
+      if (i == std::string::npos) {
+        throw std::runtime_error("invalid response: cannot find \":\"\n" +
+                                 SOURCE_LOCATION());
+      }
+      auto field_name = line.substr(0, i);
+      for (char ch : field_name) {
+        // https://developers.cloudflare.com/rules/transform/request-header-modification/reference/header-format/
+        if (!std::isalnum(ch) && !"_-"sv.contains(ch)) {
+          throw std::runtime_error(
+              "invalid response: get field name " + escape(field_name) +
+              " and it contains illegal characters!\n" + SOURCE_LOCATION());
+        }
+      }
+      std::size_t j = i + 1;
+      while (j < line.size() && std::isspace(line[j])) {
+        ++j;
+      }
+      // Ok as long as j <= line.size().
+      auto field_value = line.substr(j);
+      while (!field_value.empty() && std::isspace(field_value.back())) {
+        field_value.pop_back();
+      }
+      if (field_value.empty()) {
+        throw std::runtime_error("invalid response: empty field value\n" +
+                                 SOURCE_LOCATION());
+      }
+
+      // for (char ch : field_value) {
+      // https://developers.cloudflare.com/rules/transform/request-header-modification/reference/header-format/
+      //
+      // 2025/2/24: I don't know why it's wrong. Maybe do not check the
+      // characters for now.
+      //
+      // if (!std::isalnum(ch) &&
+      //     !R"(_ :;.,\/"'?!(){}[]@<>=-+*#$&`|~^%)"sv.contains(ch)) {
+      //   throw std::runtime_error(
+      //       "invalid response: get field value " + escape(field_value) +
+      //       " for field " + escape(field_name) +
+      //       ", and it contains illegal characters!\n" + SOURCE_LOCATION());
+      // }
+      // }
+
+      // - emplace does not overwrite an existing record.
+      // - operator[] requires the value to be default-constructible.
+      // - insert_or_assign overwrites an existing record.
+      headers.insert_or_assign(field_name, field_value);
+    }
+    if (auto p = headers.find("Content-Length"); p != headers.end()) {
+      auto len = std::stoi(p->second);
+      body.resize(len);
+      co_await f.puts(body);
+    }
+  }
+
   static Task<> write_to(EpollScheduler &sched, AsyncFileStream &f,
                          HTTPHeaders const &headers, std::string const &body,
                          std::string_view line_start = "") {
@@ -209,9 +276,16 @@ struct HTTPHeaderBody {
           THROW_SYSCALL("write-end hung up");
         }
       } else {
-        for (auto line : std::views::split(body, '\n')) {
-          auto sv = std::string_view{line};
-          res = co_await print(sched, f, sv);
+        // TODO: the correct logic may be print line_start first, and
+        // replace every '\n' to '\n' + line_start.
+        auto res = co_await print(sched, f, line_start);
+        if (res.hup) {
+          THROW_SYSCALL("write-end hung up");
+        }
+        std::string_view sv = body;
+        auto pos = sv.find('\n');
+        while (pos != std::string_view::npos) {
+          auto res = co_await print(sched, f, sv.substr(0, pos));
           if (res.hup) {
             THROW_SYSCALL("write-end hung up");
           }
@@ -219,6 +293,72 @@ struct HTTPHeaderBody {
           if (res.hup) {
             THROW_SYSCALL("write-end hung up");
           }
+          res = co_await print(sched, f, line_start);
+          if (res.hup) {
+            THROW_SYSCALL("write-end hung up");
+          }
+          sv = sv.substr(pos + 1);
+          pos = sv.find('\n');
+        }
+        if (!sv.empty()) {
+          auto res = co_await print(sched, f, sv);
+          if (res.hup) {
+            THROW_SYSCALL("write-end hung up");
+          }
+        }
+      }
+    }
+  }
+
+  static Task<> write_to(EpollScheduler &sched, AsyncFileBuffer &f,
+                         HTTPHeaders const &headers, std::string const &body,
+                         std::string_view line_start = "") {
+    using namespace std::literals;
+
+    // Write the headers, excluding "Content-Length" if it exists
+    for (auto const &[k, v] : headers) {
+      if (cmp::CaseInsensitiveEqual{}(k, "Content-Length")) {
+        continue;
+      }
+      if (!line_start.empty())
+        co_await f.puts(line_start);
+      co_await f.puts(k);
+      co_await f.puts(": "sv);
+      co_await f.puts(v);
+      co_await f.puts("\r\n"sv);
+    }
+
+    // Write the Content-Length header if there is a body
+    if (!body.empty()) {
+      if (!line_start.empty())
+        co_await f.puts(line_start);
+      co_await f.puts("Content-Length: "sv);
+      co_await f.puts(std::to_string(body.size()));
+      co_await f.puts("\r\n"sv);
+    }
+
+    // End of headers
+    if (!line_start.empty())
+      co_await f.puts(line_start);
+    co_await f.puts("\r\n"sv);
+
+    // Send body if it exists
+    if (!body.empty()) {
+      if (line_start == ""sv) {
+        co_await f.puts(body);
+      } else {
+        co_await f.puts(line_start);
+        std::string_view sv = body;
+        auto pos = sv.find('\n');
+        while (pos != std::string_view::npos) {
+          co_await f.puts(sv.substr(0, pos));
+          co_await f.putchar('\n');
+          co_await f.puts(line_start);
+          sv = sv.substr(pos + 1);
+          pos = sv.find('\n');
+        }
+        if (!sv.empty()) {
+          co_await f.puts(sv);
         }
       }
     }
@@ -268,6 +408,31 @@ struct HTTPRequest {
     }
     {
       std::stringstream ss(line.result);
+      ss >> method >> uri;
+    }
+    if (http_method(method) == HTTPMethod::INVALID) {
+      throw std::runtime_error("invalid http method: " + method + "\n" +
+                               SOURCE_LOCATION());
+    }
+
+    co_await HTTPHeaderBody::read_from(sched, f, headers, body);
+  }
+
+  Task<> read_from(EpollScheduler &sched, AsyncFileBuffer &f) {
+    using namespace std::literals;
+    clear();
+
+    auto line = co_await f.getline("\r\n"sv);
+
+    while (!line.empty() && std::isspace(line.back())) {
+      line.pop_back();
+    }
+    if (!line.ends_with("HTTP/1.1"sv)) {
+      throw std::runtime_error("invalid request: cannot find \"HTTP/1.1\"\n" +
+                               SOURCE_LOCATION());
+    }
+    {
+      std::stringstream ss(line);
       ss >> method >> uri;
     }
     if (http_method(method) == HTTPMethod::INVALID) {
@@ -394,6 +559,19 @@ struct HTTPRequest {
     co_await HTTPHeaderBody::write_to(sched, f, headers, body, line_start);
   }
 
+  Task<> write_to(EpollScheduler &sched, AsyncFileBuffer &f,
+                  std::string_view line_start = "") const {
+    using namespace std::literals;
+    std::string s;
+    s += line_start;
+    s += method.empty() ? "<empty>"sv : method;
+    s += " "sv;
+    s += uri.empty() ? "<empty>"sv : uri;
+    s += " HTTP/1.1\r\n"sv;
+    co_await f.puts(s);
+    co_await HTTPHeaderBody::write_to(sched, f, headers, body, line_start);
+  }
+
   auto to_tuple() const { return std::make_tuple(method, uri, headers, body); }
 
   struct ParsedURI {
@@ -508,12 +686,34 @@ struct HTTPResponse {
     co_await HTTPHeaderBody::read_from(sched, f, headers, body);
   }
 
+  Task<> read_from(EpollScheduler &sched, AsyncFileBuffer &f) {
+    using namespace std::literals;
+    clear();
+
+    auto line = co_await f.getline("\r\n"sv);
+    if (!line.starts_with("HTTP/1.1 "sv)) {
+      throw std::runtime_error("invalid response: cannot find \"HTTP/1.1\"\n" +
+                               SOURCE_LOCATION());
+    }
+    status = std::stoi(line.substr("HTTP/1.1 "sv.size()));
+
+    co_await HTTPHeaderBody::read_from(sched, f, headers, body);
+  }
+
   Task<> write_to(EpollScheduler &sched, AsyncFileStream &f,
                   std::string_view line_start = "") const {
     using namespace std::literals;
     co_await print(sched, f,
                    std::format("{}HTTP/1.1 {} {}\r\n", line_start, status,
                                status_message(status)));
+    co_await HTTPHeaderBody::write_to(sched, f, headers, body, line_start);
+  }
+
+  Task<> write_to(EpollScheduler &sched, AsyncFileBuffer &f,
+                  std::string_view line_start = "") const {
+    using namespace std::literals;
+    co_await f.puts(std::format("{}HTTP/1.1 {} {}\r\n", line_start, status,
+                                status_message(status)));
     co_await HTTPHeaderBody::write_to(sched, f, headers, body, line_start);
   }
 

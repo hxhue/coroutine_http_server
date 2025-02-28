@@ -168,7 +168,9 @@ wait_file_event(EpollScheduler &sched, AsyncFile &file, EpollEventMask events) {
 
 inline std::size_t read_file_sync(AsyncFile &file, std::span<char> buffer) {
   auto ret = read(file.fd_, buffer.data(), buffer.size());
-  if (ret == -1 && errno == EAGAIN) {
+  int err = errno;
+  // EAGAIN and EWOULDBLOCK can be different.
+  if (ret == -1 && (err == EAGAIN || err == EWOULDBLOCK)) {
     ret = 0;
   }
   if (ret == -1) {
@@ -181,7 +183,9 @@ inline std::size_t read_file_sync(AsyncFile &file, std::span<char> buffer) {
 inline std::size_t write_file_sync(AsyncFile &file,
                                    std::span<char const> buffer) {
   auto ret = write(file.fd_, buffer.data(), buffer.size());
-  if (ret == -1 && errno == EAGAIN) {
+  int err = errno;
+  // EAGAIN and EWOULDBLOCK can be different.
+  if (ret == -1 && (err == EAGAIN || err == EWOULDBLOCK)) {
     ret = 0;
   }
   if (ret == -1) {
@@ -195,29 +199,26 @@ read_file_best_effort(EpollScheduler &sched, AsyncFile &file,
                       std::span<char> buffer) {
   auto ev =
       co_await wait_file_event(sched, file, EPOLLIN | EPOLLRDHUP | EPOLLHUP);
-  bool hup = ev & (EPOLLRDHUP | EPOLLHUP);
-  if (hup) {
-    co_return {0, hup};
+  if (ev & EPOLLIN) {
+    auto len = read_file_sync(file, buffer);
+    co_return {len, false};
   }
-  auto len = read_file_sync(file, buffer);
-  co_return {len, hup};
+  co_return {0, true};
 }
 
 inline Task<IOResult<std::size_t>>
 write_file_best_effort(EpollScheduler &sched, AsyncFile &file,
                        std::span<char const> buffer) {
   auto ev = co_await wait_file_event(sched, file, EPOLLOUT | EPOLLHUP);
-  bool hup = ev & EPOLLHUP;
-  if (hup) {
-    co_return {0, hup};
+  if (ev & EPOLLOUT) {
+    auto len = write_file_sync(file, buffer);
+    co_return {len, false};
   }
-  auto len = write_file_sync(file, buffer);
-  co_return {len, hup};
+  co_return {0, true};
 }
 
-inline Task<IOResult<std::string>>
-read_string_best_effort(EpollScheduler &sched, AsyncFile &file) {
-  co_await wait_file_event(sched, file, EPOLLIN);
+inline Task<IOResult<std::string>> read_string(EpollScheduler &sched,
+                                               AsyncFile &file) {
   std::string s;
   size_t chunk = 64;
   bool hup = false;
@@ -249,8 +250,8 @@ inline Task<IOResult<std::string>> getline(EpollScheduler &sched,
     errno = 0;
     int ch = getc(f);
     if (ch == EOF && errno == EAGAIN) {
-      auto ev = co_await wait_file_event(
-          sched, f, EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLET);
+      auto ev =
+          co_await wait_file_event(sched, f, EPOLLIN | EPOLLRDHUP | EPOLLHUP);
       if (!(ev & EPOLLIN)) {
         co_return {.result = std::move(s), .hup = true};
       }
@@ -277,8 +278,8 @@ read_buffer(EpollScheduler &sched, AsyncFileStream &f, std::span<char> buf) {
     errno = 0;
     int ch = getc(f);
     if (ch == EOF && errno == EAGAIN) {
-      auto ev = co_await wait_file_event(
-          sched, f, EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLET);
+      auto ev =
+          co_await wait_file_event(sched, f, EPOLLIN | EPOLLRDHUP | EPOLLHUP);
       if (!(ev & EPOLLIN)) {
         co_return {.result = i, .hup = true};
       }
@@ -300,8 +301,7 @@ print(EpollScheduler &sched, AsyncFileStream &f, std::string_view sv) {
     errno = 0;
     auto res = putc(ch, f);
     if (res == EOF && errno == EAGAIN) {
-      auto ev =
-          co_await wait_file_event(sched, f, EPOLLOUT | EPOLLHUP | EPOLLET);
+      auto ev = co_await wait_file_event(sched, f, EPOLLOUT | EPOLLHUP);
       if (!(ev & EPOLLOUT)) {
         co_return {.result = len, .hup = true};
       }
@@ -317,5 +317,27 @@ print(EpollScheduler &sched, AsyncFileStream &f, std::string_view sv) {
 inline void flush(AsyncFileStream &f) {
   CHECK_SYSCALL(fflush(static_cast<FILE *>(f)));
 }
+
+struct AsyncFileBuffer : AsyncIOStreamBase<AsyncFileBuffer> {
+  AsyncFileBuffer(EpollScheduler &loop, AsyncFile file,
+                  std::size_t buffer_size = 8192)
+      : AsyncIOStreamBase<AsyncFileBuffer>(buffer_size), sched_(&loop),
+        file_(std::move(file)) {}
+
+  AsyncFileBuffer() noexcept : sched_(nullptr) {}
+
+  Task<std::size_t> read(std::span<char> buffer) {
+    auto res = co_await read_file_best_effort(*sched_, file_, buffer);
+    co_return res.result; // Ignore .hup
+  }
+
+  Task<std::size_t> write(std::span<char const> buffer) {
+    auto res = co_await write_file_best_effort(*sched_, file_, buffer);
+    co_return res.result; // Ignore .hup
+  }
+
+  EpollScheduler *sched_;
+  AsyncFile file_;
+};
 
 } // namespace coro
