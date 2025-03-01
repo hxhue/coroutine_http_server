@@ -16,6 +16,7 @@
 #include "aio.hpp"
 #include "epoll.hpp"
 #include "http.hpp"
+#include "router.hpp"
 #include "socket.hpp"
 #include "task.hpp"
 #include "utility.hpp"
@@ -54,53 +55,8 @@ AsyncFileStream ain(dup_stdin(), "r");
 AsyncFileStream aout(dup_stdout(), "w");
 AsyncFileStream aerr(dup_stdin(), "w");
 
-inline coro::HTTPRouter create_router() {
-  using namespace coro;
-  using namespace std::literals;
-  HTTPRouter router;
-  router.route(HTTPMethod::GET, "/", [](HTTPRequest req) -> Task<HTTPResponse> {
-    HTTPResponse res;
-    res.status = 302;
-    res.headers["Location"] = "/home"sv;
-    co_return res;
-  });
-  router.route(HTTPMethod::GET, "/home"sv,
-               [](HTTPRequest req) -> Task<HTTPResponse> {
-                 HTTPResponse res;
-                 res.status = 200;
-                 res.headers["Content-Type"] = "text/html"sv;
-                 res.body = "<h1>Hello, World!</h1>"sv;
-                 co_return res;
-               });
-  router.route(
-      HTTPMethod::GET, "/sleep"sv, [](HTTPRequest req) -> Task<HTTPResponse> {
-        HTTPResponse res;
-        res.status = 200;
-        res.headers["Content-Type"] = "text/html"sv;
-        auto uri = req.parse_uri();
-        auto sec = std::stod(uri.params.at("seconds"));
-        if (sec < 0) {
-          throw std::runtime_error("Negative sleep duration is not allowed.\n" +
-                                   SOURCE_LOCATION());
-        }
-        auto then = Clock::now() +
-                    std::chrono::duration_cast<Clock::duration>(
-                        std::chrono::duration<double, std::ratio<1, 1>>(sec));
-        co_await sleep_until(loop, then);
-        res.body = "<h1>Hello, World!</h1>"sv;
-        co_return res;
-      });
-  router.route(HTTPMethod::GET, "/repeat"sv,
-               [](HTTPRequest req) -> Task<HTTPResponse> {
-                 HTTPResponse res;
-                 res.status = 200;
-                 res.headers["Content-Type"] = "text/html"sv;
-                 auto uri = req.parse_uri();
-                 auto cnt = std::stoll(uri.params.at("count"));
-                 res.body.assign(cnt, '@');
-                 co_return res;
-               });
-  return router;
+coro::Task<> sleep_until(coro::Clock::time_point then) {
+  co_await sleep_until(loop, then);
 }
 
 Task<void> handle_request(struct sockaddr_in client_addr,
