@@ -2,3 +2,5 @@
 /build
 /.vscode/settings.json
 /private
+perf.data
+perf.data.old

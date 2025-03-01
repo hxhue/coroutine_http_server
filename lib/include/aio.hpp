@@ -293,22 +293,23 @@ template <AsyncWriter Writer> struct AsyncOStreamBase {
 
   Task<> flush() {
     if (end_) [[likely]] {
-      auto &derived = static_cast<Writer &>(*this);
-      auto span_ = std::span{buffer_.get(), end_};
-      auto sz = co_await derived.write(span_);
-      while (sz > 0 && sz != span_.size()) [[unlikely]] {
-        // Write the later half. (But why did the first write failed?)
-        span_ = span_.subspan(sz);
-        sz = co_await derived.write(span_);
-      }
-      if (sz == 0) {
-        throw EOFException("Write EOF\n" + SOURCE_LOCATION());
-      }
+      co_await write_buffer(std::span{buffer_.get(), end_});
       end_ = 0;
     }
   }
 
   Task<> puts(std::string_view sv) {
+    // If the buffer is not enough, there is definitely a flush.
+    // We can flush immediately and then call write() directly to avoid
+    // unnecessary data copying.
+    if (capacity_ - end_ < sv.size()) {
+      if (end_) {
+        co_await flush();
+      }
+      auto sp = std::span{sv.data(), sv.size()};
+      co_await write_buffer(sp);
+      co_return;
+    }
     std::size_t i = 0;
     std::size_t n = sv.size();
     while (i < n) {
@@ -318,9 +319,6 @@ template <AsyncWriter Writer> struct AsyncOStreamBase {
         co_await flush();
         continue;
       }
-      // while (can_write-- > 0) {
-      //   buffer_[end_++] = sv[i++];
-      // }
       std::memcpy(&buffer_[end_], &sv[i], can_write);
       end_ += can_write;
       i += can_write;
@@ -329,6 +327,22 @@ template <AsyncWriter Writer> struct AsyncOStreamBase {
 
 private:
   bool full() { return end_ == capacity_; }
+
+  Task<> write_buffer(std::span<const char> sp) {
+    if (sp.empty()) {
+      co_return;
+    }
+    auto &derived = static_cast<Writer &>(*this);
+    auto sz = co_await derived.write(sp);
+    while (sz > 0 && sz != sp.size()) [[unlikely]] {
+      // Write the later half. (But why did the first write failed?)
+      sp = sp.subspan(sz);
+      sz = co_await derived.write(sp);
+    }
+    if (sz == 0) {
+      throw EOFException("Write EOF\n" + SOURCE_LOCATION());
+    }
+  }
 
   std::unique_ptr<char[]> buffer_;
   std::size_t capacity_{};

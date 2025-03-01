@@ -188,6 +188,9 @@ inline std::size_t write_file_sync(AsyncFile &file,
   if (ret == -1 && (err == EAGAIN || err == EWOULDBLOCK)) {
     ret = 0;
   }
+  if (ret == -1 && err == ECONNRESET) {
+    throw EOFException("Write-end ECONNRESET\n" + SOURCE_LOCATION());
+  }
   if (ret == -1) {
     THROW_SYSCALL("write");
   }
