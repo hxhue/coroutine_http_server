@@ -318,9 +318,12 @@ template <AsyncWriter Writer> struct AsyncOStreamBase {
         co_await flush();
         continue;
       }
-      while (can_write-- > 0) {
-        buffer_[end_++] = sv[i++];
-      }
+      // while (can_write-- > 0) {
+      //   buffer_[end_++] = sv[i++];
+      // }
+      std::memcpy(&buffer_[end_], &sv[i], can_write);
+      end_ += can_write;
+      i += can_write;
     }
   }
 
