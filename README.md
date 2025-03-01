@@ -77,7 +77,7 @@ When the program is almost always I/O-ready:
 wrk -t12 -c1000 -d20s http://localhost:9000/repeat\?count\=10000
 ```
 
-- Blocking version (example/server_epoll.cpp): **Requests/sec:  42020.76**
+- Blocking version (example/server_blocking.cpp): **Requests/sec:  42020.76**
 - Coroutine version (example/server_epoll_coro.cpp): **Requests/sec:  33691.99**
 
 In this case, coroutines and non-blocking I/O make the performance worse!

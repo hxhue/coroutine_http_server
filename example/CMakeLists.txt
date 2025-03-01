@@ -1,4 +1,4 @@
-set(EXECUTABLES server_epoll_coro server_epoll)
+set(EXECUTABLES server_epoll_coro server_blocking)
 
 foreach(exe IN LISTS EXECUTABLES)
   add_executable(${exe} ${exe}.cpp)

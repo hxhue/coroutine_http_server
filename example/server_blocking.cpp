@@ -7,7 +7,6 @@
 #include <iostream>
 #include <netinet/in.h>
 #include <signal.h>
-#include <sys/epoll.h>
 #include <termios.h>
 #include <thread>
 #include <unistd.h>
