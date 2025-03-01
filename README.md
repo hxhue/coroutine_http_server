@@ -59,7 +59,7 @@ git submodule update --init --recursive
 
 <!-- Install `liburing` by `sudo apt install liburing-dev`. -->
 
-Then run cmake commands to build the project.
+Then run cmake commands to build the project. (You can run unit tests in the build directory by running `ctest`.)
 
 Development setup:
 
@@ -94,7 +94,7 @@ wrk -t12 -c1000 -d20s http://localhost:9000/sleep\?ms\=<ms>
 
 ![Performance comparison: blocking vs coro](./doc/assets/image.png)
 
-It's interesting that when coroutines sleep for a while, they work better 😂. I suspect that when they are not scheduled immediately, `epoll_wait()` + `accept()` can accept more incoming connections. It's like batch-processing.
+It's interesting that when coroutines sleep for a while, they work better 😂. I suspect that when they are not scheduled immediately, `epoll_wait()` + `accept()` can accept more incoming connections. It's like calling more people into a restaurant. They just end up waiting a long time for their food to arrive and having a bad experience, but the restaurant earns more.
 
 For reference, [archibate/co_async/example/server.cpp](https://github.com/archibate/co_async/blob/master/examples/server.cpp) achieves 81044.05 requests/s in my test. Probably due to io_uring?
 
