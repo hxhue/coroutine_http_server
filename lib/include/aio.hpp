@@ -357,35 +357,4 @@ struct AsyncIOStreamBase : AsyncIStreamBase<ReadWriter>,
         AsyncOStreamBase<ReadWriter>(buffer_size) {}
 };
 
-// template <AsyncReader Reader>
-// struct AsyncIStream : AsyncIStreamBase<AsyncIStream<Reader>>, Reader {
-//   template <typename... Args>
-//   AsyncIStream(Args &&...args)
-//       : AsyncIStreamBase<AsyncIStream<Reader>>(),
-//         Reader(std::forward<Args>(args)...) {}
-// };
-
-// // template <AsyncWriter Writer>
-// // struct AsyncOStream : AsyncOStreamBase<Writer>, Writer {
-// //   template <typename... Args>
-// //   AsyncOStream(Args &&...args)
-// //       : AsyncOStreamBase<Writer>(), Writer(std::forward<Args>(args)...) {}
-// // };
-// template <AsyncWriter Writer>
-// struct AsyncOStream : AsyncOStreamBase<AsyncOStream<Writer>>, Writer {
-//   template <typename... Args>
-//   AsyncOStream(Args &&...args)
-//       : AsyncOStreamBase<AsyncOStream<Writer>>(),
-//         Writer(std::forward<Args>(args)...) {}
-// };
-
-// template <AsyncReadWriter ReadWriter>
-// struct AsyncIOStream : AsyncIOStreamBase<AsyncIOStream<ReadWriter>>,
-//                        ReadWriter {
-//   template <typename... Args>
-//   AsyncIOStream(Args &&...args)
-//       : AsyncIOStreamBase<AsyncIOStream<ReadWriter>>(),
-//         ReadWriter(std::forward<Args>(args)...) {}
-// };
-
 } // namespace coro
