@@ -211,7 +211,12 @@ template <AsyncReader Reader> struct AsyncIStreamBase {
   Task<std::string> getn(std::size_t n) {
     std::string s;
     for (std::size_t i = 0; i < n; i++) {
-      char ch = co_await getchar();
+      // char ch = co_await getchar();
+      if (empty()) [[unlikely]] {
+        co_await refill();
+      };
+      char ch = buffer_[start_++];
+      // ^^^ Manual inline ^^^
       s.push_back(ch);
     }
     co_return s;
@@ -220,11 +225,21 @@ template <AsyncReader Reader> struct AsyncIStreamBase {
   Task<std::string> getline(std::string_view eol) {
     std::string s;
     while (true) {
-      char ch = co_await getchar();
+      // char ch = co_await getchar();
+      if (empty()) [[unlikely]] {
+        co_await refill();
+      };
+      char ch = buffer_[start_++];
+      // ^^^ Manual inline ^^^
       if (ch == eol[0]) {
         std::size_t i;
         for (i = 1; i < eol.size(); ++i) {
-          char ch = co_await getchar();
+          // char ch = co_await getchar();
+          if (empty()) [[unlikely]] {
+            co_await refill();
+          };
+          char ch = buffer_[start_++];
+          // ^^^ Manual inline ^^^
           if (ch != eol[i]) {
             break;
           }
@@ -294,8 +309,18 @@ template <AsyncWriter Writer> struct AsyncOStreamBase {
   }
 
   Task<> puts(std::string_view sv) {
-    for (char ch : sv) {
-      co_await putchar(ch);
+    std::size_t i = 0;
+    std::size_t n = sv.size();
+    while (i < n) {
+      assert(capacity_ >= end_);
+      std::size_t can_write = std::min(capacity_ - end_, n - i);
+      if (!can_write) {
+        co_await flush();
+        continue;
+      }
+      while (can_write-- > 0) {
+        buffer_[end_++] = sv[i++];
+      }
     }
   }
 

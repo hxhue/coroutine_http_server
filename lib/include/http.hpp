@@ -453,7 +453,7 @@ struct HTTPRequest {
     if (!fgets(buf, sizeof(buf), f)) {
       if (errno == 0) {
         // somehow closed
-        throw std::runtime_error("The stream is closed?\n" + SOURCE_LOCATION());
+        throw EOFException("The stream is closed?\n" + SOURCE_LOCATION());
       } else {
         THROW_SYSCALL("fgets");
       }

@@ -197,23 +197,31 @@ inline std::size_t write_file_sync(AsyncFile &file,
 inline Task<IOResult<std::size_t>>
 read_file_best_effort(EpollScheduler &sched, AsyncFile &file,
                       std::span<char> buffer) {
-  auto ev =
-      co_await wait_file_event(sched, file, EPOLLIN | EPOLLRDHUP | EPOLLHUP);
+  // Maybe I don't care about EPOLLRDHUP.
+  auto ev = co_await wait_file_event(sched, file, EPOLLIN);
+  if (ev & (EPOLLERR | EPOLLHUP)) { // Those 2 events are always waited.
+    co_return {0, true};
+  }
   if (ev & EPOLLIN) {
     auto len = read_file_sync(file, buffer);
     co_return {len, false};
   }
+  // What's this?
   co_return {0, true};
 }
 
 inline Task<IOResult<std::size_t>>
 write_file_best_effort(EpollScheduler &sched, AsyncFile &file,
                        std::span<char const> buffer) {
-  auto ev = co_await wait_file_event(sched, file, EPOLLOUT | EPOLLHUP);
+  auto ev = co_await wait_file_event(sched, file, EPOLLOUT);
+  if (ev & (EPOLLERR | EPOLLHUP)) { // Those 2 events are always waited.
+    co_return {0, true};
+  }
   if (ev & EPOLLOUT) {
     auto len = write_file_sync(file, buffer);
     co_return {len, false};
   }
+  // What's this?
   co_return {0, true};
 }
 
@@ -250,9 +258,8 @@ inline Task<IOResult<std::string>> getline(EpollScheduler &sched,
     errno = 0;
     int ch = getc(f);
     if (ch == EOF && errno == EAGAIN) {
-      auto ev =
-          co_await wait_file_event(sched, f, EPOLLIN | EPOLLRDHUP | EPOLLHUP);
-      if (!(ev & EPOLLIN)) {
+      auto ev = co_await wait_file_event(sched, f, EPOLLIN);
+      if (ev & (EPOLLERR | EPOLLHUP)) { // Those 2 events are always waited.
         co_return {.result = std::move(s), .hup = true};
       }
       continue;
@@ -278,9 +285,8 @@ read_buffer(EpollScheduler &sched, AsyncFileStream &f, std::span<char> buf) {
     errno = 0;
     int ch = getc(f);
     if (ch == EOF && errno == EAGAIN) {
-      auto ev =
-          co_await wait_file_event(sched, f, EPOLLIN | EPOLLRDHUP | EPOLLHUP);
-      if (!(ev & EPOLLIN)) {
+      auto ev = co_await wait_file_event(sched, f, EPOLLIN);
+      if (ev & (EPOLLERR | EPOLLHUP)) { // Those 2 events are always waited.
         co_return {.result = i, .hup = true};
       }
       continue;
@@ -301,8 +307,8 @@ print(EpollScheduler &sched, AsyncFileStream &f, std::string_view sv) {
     errno = 0;
     auto res = putc(ch, f);
     if (res == EOF && errno == EAGAIN) {
-      auto ev = co_await wait_file_event(sched, f, EPOLLOUT | EPOLLHUP);
-      if (!(ev & EPOLLOUT)) {
+      auto ev = co_await wait_file_event(sched, f, EPOLLOUT);
+      if (ev & (EPOLLERR | EPOLLHUP)) { // Those 2 events are always waited.
         co_return {.result = len, .hup = true};
       }
       continue;

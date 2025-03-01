@@ -122,7 +122,6 @@ inline int socket_getopt(AsyncFile &sock, int level, int optname) {
 
 inline Task<void> socket_connect(EpollScheduler &sched, AsyncFile &sock,
                                  SocketAddress const &addr) {
-  // sock.set_nonblock();
   int res = connect(sock.fd_, (sockaddr const *)&addr.addr_, addr.len_);
   if (res == -1 && errno == EINPROGRESS) {
     res = 0;

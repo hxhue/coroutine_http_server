@@ -6,18 +6,70 @@
 #include <fcntl.h>
 #include <iostream>
 #include <netinet/in.h>
+#include <signal.h>
 #include <sys/epoll.h>
 #include <termios.h>
 #include <unistd.h>
 
 #include "aio.hpp"
 #include "http.hpp"
-#include "router.hpp"
 #include "socket.hpp"
 #include "task.hpp"
 #include "utility.hpp"
 
 using namespace coro;
+
+inline HTTPRouter create_router() {
+  using namespace coro;
+  using namespace std::literals;
+  HTTPRouter router;
+  router.route(HTTPMethod::GET, "/", [](HTTPRequest req) -> Task<HTTPResponse> {
+    HTTPResponse res;
+    res.status = 302;
+    res.headers["Location"] = "/home"sv;
+    co_return res;
+  });
+  router.route(HTTPMethod::GET, "/home"sv,
+               [](HTTPRequest req) -> Task<HTTPResponse> {
+                 HTTPResponse res;
+                 res.status = 200;
+                 res.headers["Content-Type"] = "text/html"sv;
+                 res.body = "<h1>Hello, World!</h1>"sv;
+                 co_return res;
+               });
+  // Simulate a time-consuming task.
+  // e.g. /sleep?seconds=0.05
+  router.route(
+      HTTPMethod::GET, "/sleep"sv, [](HTTPRequest req) -> Task<HTTPResponse> {
+        HTTPResponse res;
+        res.status = 200;
+        res.headers["Content-Type"] = "text/html"sv;
+        auto uri = req.parse_uri();
+        auto sec = std::stod(uri.params.at("seconds"));
+        if (sec < 0) {
+          throw std::runtime_error("Negative sleep duration is not allowed.\n" +
+                                   SOURCE_LOCATION());
+        }
+        std::this_thread::sleep_until(
+            std::chrono::steady_clock::now() +
+            std::chrono::duration<double, std::ratio<1, 1>>(sec));
+        res.body = "<h1>Hello, World!</h1>"sv;
+        co_return res;
+      });
+  // Simulate a output-heavy task.
+  // e.g. /repeat?count=10000
+  router.route(HTTPMethod::GET, "/repeat"sv,
+               [](HTTPRequest req) -> Task<HTTPResponse> {
+                 HTTPResponse res;
+                 res.status = 200;
+                 res.headers["Content-Type"] = "text/html"sv;
+                 auto uri = req.parse_uri();
+                 auto cnt = std::stoll(uri.params.at("count"));
+                 res.body.assign(cnt, '@');
+                 co_return res;
+               });
+  return router;
+}
 
 void handle_request(struct sockaddr_in client_addr, socklen_t client_addr_len,
                     FileDescriptor client_sock /* to be moved */,
@@ -25,6 +77,7 @@ void handle_request(struct sockaddr_in client_addr, socklen_t client_addr_len,
   using namespace std::literals;
 
   try {
+    int client_fd = client_sock.fd;
     auto sock = FileStream(std::move(client_sock), "r+");
 
     char client_ip[INET_ADDRSTRLEN];
@@ -53,14 +106,23 @@ void handle_request(struct sockaddr_in client_addr, socklen_t client_addr_len,
     if (EOF == fputs(s.c_str(), sock.stream)) {
       THROW_SYSCALL("write (fputs)");
     }
+    if (fcntl(client_fd, F_GETFL) == -1) {
+      THROW_SYSCALL("possible broken pipe");
+    }
     fflush(sock.stream);
+  } catch (EOFException &e) {
+    // Ignore EOF.
   } catch (std::exception &e) {
-    // std::cerr << e.what() << "\n";
+    std::cerr << e.what() << "\n";
   }
 }
 
 int main() {
   using namespace std::literals;
+
+  // Now that I'm using FILE*, I cannot really know the state of a socket.
+  // I choose to ignore SIGPIPE.
+  signal(SIGPIPE, SIG_IGN);
 
   /////////////////// Set up routes ///////////////////
   HTTPRouter router = create_router();
