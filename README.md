@@ -2,6 +2,8 @@
 
 <!-- - ~~Stackless coroutines with symmetric transfer~~ -->
 
+A coroutine-based HTTP server modeled after [archibate/co_async](https://github.com/archibate/co_async).
+
 # Design
 
 How to start a task:
@@ -25,9 +27,9 @@ A blocking scheduler should be put at the end of a loop, making sure that there'
 
 File operations:
 
-- The operations encapsulates `getc` and `putc` around a `FILE*` that is associated with non-blocking file descriptors.
 - `AsyncFile` is to a file descriptor what `std::unique_ptr` is to a raw pointer.
-- `AsyncFileStream` serves as a wrapper for `AsyncFile`, analogous to how `FILE*` operates.
+- `AsyncFileStream` serves as a wrapper for `AsyncFile`, analogous to how `FILE*` operates. The operations encapsulates `getc` and `putc` around a `FILE*` that is associated with non-blocking file descriptors.
+- `AsyncFileBuffer` maintains a buffer itself and interact directly with `read()`/`write()` so it can get more accurate feedback on errors and work potentially better.
 
 Utilities:
 
@@ -35,65 +37,6 @@ Utilities:
     - They both assume the tasks passed as arguments are not in the scheduler.
     - When the last task of the `when_all` group finishes, it awakes the previous suspended task (which is waiting for `when_all` coroutine to finish).
     - When the first task finishes, `when_any` destroys the other tasks by returning from the coroutine body and letting the temporary tasks' destructors destroy the coroutine handles and remove them from the scheduler.
-
-## Details
-
-`co_await` is where a lot of logic happens.
-
-### `PreviousTask` (`Task`)
-
-Every basic `Promise` is a `PreviousPromise`, and every basic `Task` is a `PreviousTask`. That's why the names omit the prefix. 
-
-1. A Task is also an awaitable, and `await_suspend` (triggered by `co_await`) saves current coroutine handle before returning the task's associated coroutine handle (task transfer). 
-2. When the task finishes, `co_await final_suspend(h)` returns the previous coroutine handle and it gets resumed.
-
-### `ReturnPreviousTask`
-
-1. `return_value` (triggered by `co_return`) saves a new coroutine handle.
-2. `co_await final_suspend(h)` returns the new handle if it's not null.
-
-### `when_all` vs. multiple consecutive `co_await`s
-
-In the following code, `task3` launches `task1` and `task2` before being suspended.
-
-```cpp
-int main() {
-  using namespace std::chrono_literals;
-  auto *scheduler = Scheduler::get();
-
-  auto task3 = []() -> Task<void> {
-    auto task1 = []() -> Task<int> {
-      std::cout << "task1 goes to sleep\n";
-      co_await sleep_for(1s);
-      std::cout << "task1 wakes up\n";
-      co_return 1;
-    }();
-    auto task2 = []() -> Task<int> {
-      std::cout << "task2 goes to sleep\n";
-      co_await sleep_for(2s);
-      std::cout << "task2 wakes up\n";
-      co_return 2;
-    }();
-
-    auto [result1, result2] = co_await when_all(task1, task2);
-
-    std::cout << "task1 result: " << result1 << std::endl;
-    std::cout << "task2 result: " << result2 << std::endl;
-  }();
-
-  scheduler->add_task(task3);
-  scheduler->main_loop();
-}
-```
-
-However, if we change the `co_await when_all` expression to two separate `co_await` statements, only the first task gets created when the current coroutine is suspended. You end up waiting for 3 seconds!
-
-```diff
--    auto [result1, result2] = co_await when_all(task1, task2);
-+    auto result1 = co_await task1;
-+    auto result2 = co_await task2;
-```
-For a more in-depth explanation, please refer to this link: https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1316r0.pdf.
 
 # Build
 
@@ -105,7 +48,7 @@ git submodule update --init --recursive
 ```
 
 > [!CAUTION]
-> **You should run `git submodule add` at the root of the project's workspace**.
+> You should run `git submodule add` at the root of the project's workspace.
 
 Second, download this dependency (this library translates http status codes to strings):
 
@@ -122,6 +65,49 @@ Development setup:
 
 - Compiler: GCC 13.3.0
 - System: Ubuntu 24.04.1 LTS (WSL2)
+- CPU: Intel® Core™ Ultra 9 Processor 185H
+
+# Results
+
+When the program is almost always I/O-ready:
+
+```bash
+wrk -t12 -c1000 -d20s http://localhost:9000/repeat\?count\=10000
+```
+
+- Blocking version (example/server_epoll.cpp): **Requests/sec:  42020.76**
+- Coroutine version (example/server_epoll_coro.cpp): **Requests/sec:  33691.99**
+
+In this case, coroutines and non-blocking I/O make the performance worse!
+
+When the program needs to wait for other time-consuming operations:
+
+```bash
+wrk -t12 -c1000 -d20s http://localhost:9000/sleep\?ms\=<ms>
+```
+| ms       | 0        | 1e-6     | 1e-5     | 1e-4     | 1e-3     | 1e-2     | 0.1      | 1        | 10       |
+| -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
+| blocking | 54294.19 | 47433.17 | 45850.88 | 11849.45 | 11283.70 | 10186.02 | 5107.66  | 865.31   | 96.58    |
+| coro     | 45168.30 | 42747.37 | 42881.30 | 47369.20 | 45861.48 | 45144.80 | 56382.97 | 61340.93 | 42636.99 |
+
+![Performance comparison: blocking vs coro](./doc/assets/image.png)
+
+It's interesting that when coroutines sleep for a while, they work better 😂. I suspect that when they are not scheduled immediately, `epoll_wait()` + `accept()` can accept more incoming connections. It's like batch-processing.
+
+For reference, [archibate/co_async/example/server.cpp](https://github.com/archibate/co_async/blob/master/examples/server.cpp) achieves 81044.05 requests/s. Probably due to io_uring?
+
+To further improve the performance, I can still:
+
+- Utilize thread pools.
+  - Currently the project only gives a demo in a single thread.
+- Switch to liburing-based I/O.
+  - Imagine io_uring as a way of issuing async syscalls to the Linux kernel without doing it directly in your program (`epoll_wait()` + `read()`/`write()`). Not only the number of syscalls is greatly reduced, you don't have to wait for `read()`/`write()` finish. Moreover, io_uring supports zero-copy.
+
+# Details to Share
+
+- [About coroutine](./doc/coro_impl_details.md)
+- [How did I improve the output throughput of `AsyncFileBuffer` (6008.07 → 33691.99 qps)](./doc/puts_throughput.md)
+
 
 # Resources
 
