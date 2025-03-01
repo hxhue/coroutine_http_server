@@ -6,7 +6,7 @@ A coroutine-based HTTP server modeled after [archibate/co_async](https://github.
 
 # Design
 
-How to start a task:
+Task management:
 
 1. Create an entrypoint task.
 2. This task may spawn other tasks, leaving them in different schedulers.
@@ -69,6 +69,8 @@ Development setup:
 
 # Results
 
+Compile flags: `-O2 -g`.
+
 When the program is almost always I/O-ready:
 
 ```bash
@@ -94,18 +96,18 @@ wrk -t12 -c1000 -d20s http://localhost:9000/sleep\?ms\=<ms>
 
 It's interesting that when coroutines sleep for a while, they work better 😂. I suspect that when they are not scheduled immediately, `epoll_wait()` + `accept()` can accept more incoming connections. It's like batch-processing.
 
-For reference, [archibate/co_async/example/server.cpp](https://github.com/archibate/co_async/blob/master/examples/server.cpp) achieves 81044.05 requests/s. Probably due to io_uring?
+For reference, [archibate/co_async/example/server.cpp](https://github.com/archibate/co_async/blob/master/examples/server.cpp) achieves 81044.05 requests/s in my test. Probably due to io_uring?
 
 To further improve the performance, I can still:
 
-- Utilize thread pools.
+- Utilize a thread pool.
   - Currently the project only gives a demo in a single thread.
 - Switch to liburing-based I/O.
-  - Imagine io_uring as a way of issuing async syscalls to the Linux kernel without doing it directly in your program (`epoll_wait()` + `read()`/`write()`). Not only the number of syscalls is greatly reduced, you don't have to wait for `read()`/`write()` finish. Moreover, io_uring supports zero-copy.
+  - Imagine io_uring as a way of issuing async syscalls to the Linux kernel without doing it directly in your program (`epoll_wait()` + `read()`/`write()`). Not only the number of syscalls is greatly reduced, you don't have to wait for `read()`/`write()` to finish. Moreover, io_uring supports zero-copy.
 
 # Details to Share
 
-- [About coroutine](./doc/coro_impl_details.md)
+- [Some of the task model's design details](./doc/coro_impl_details.md)
 - [How did I improve the output throughput of `AsyncFileBuffer` (6008.07 → 33691.99 qps)](./doc/puts_throughput.md)
 
 

@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <iostream>
 #include <netinet/in.h>
+#include <stdexcept>
 #include <sys/epoll.h>
 #include <termios.h>
 #include <unistd.h>
@@ -139,9 +140,9 @@ int main() {
              sizeof(server_addr)) < 0) {
       CHECK_SYSCALL(close(server_socket));
       if (++port > max_port) {
-        std::cerr << std::format("Failed to bind socket in port range {}-{}",
-                                 min_port, max_port)
-                  << std::endl;
+        throw std::runtime_error{
+            std::format("Failed to bind socket in port range {}-{}\n{}",
+                        min_port, max_port, SOURCE_LOCATION())};
       }
     } else {
       break;
